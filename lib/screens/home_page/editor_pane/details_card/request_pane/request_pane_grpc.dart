@@ -931,10 +931,30 @@ class _EditGrpcRequestPaneState
       _uploadedProtoFiles = [file.path];
     });
     _persistGrpcDraft();
+
+    final notifier = ref.read(grpcNotifierProvider.notifier);
+    final model = GrpcRequestModel(
+      host: _hostCtrl.text.trim(),
+      port: int.tryParse(_portCtrl.text) ?? 443,
+      useTls: _useTls,
+      serviceName: _serviceCtrl.text.trim(),
+      methodName: _methodCtrl.text.trim(),
+      requestJson: _bodyCtrl.text,
+      metadata: _metadata,
+      callType: _callType,
+      protoFiles: _uploadedProtoFiles,
+    );
+
+    await notifier.discoverFromProtoFiles(model);
+    if (!mounted) return;
+
+    final session = ref.read(grpcNotifierProvider);
+    final message = session.discoveryMessage ??
+        (session.discoveryStatus == GrpcDiscoveryStatus.discovered
+            ? 'Proto files loaded successfully.'
+            : 'Failed to load proto files.');
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Proto file selected. Parsing-based invocation is pending implementation.'),
-      ),
+      SnackBar(content: Text(message)),
     );
   }
 

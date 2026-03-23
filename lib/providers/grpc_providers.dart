@@ -117,6 +117,43 @@ class GrpcNotifier extends StateNotifier<GrpcSessionState> {
     }
   }
 
+  Future<void> discoverFromProtoFiles(GrpcRequestModel model) async {
+    state = state.copyWith(
+      connectionState: GrpcConnectionState.connecting,
+      discoveryStatus: GrpcDiscoveryStatus.discovering,
+      discoveryMessage: null,
+    );
+    try {
+      final discoveredModel = await _service.discoverFromProtoFiles(model);
+      final failed =
+          discoveredModel.descriptorSource == GrpcDescriptorSource.protoUploadRequired;
+      state = state.copyWith(
+        connectionState: failed
+            ? GrpcConnectionState.disconnected
+            : GrpcConnectionState.connected,
+        discoveryStatus: failed
+            ? GrpcDiscoveryStatus.requiresProtoUpload
+            : GrpcDiscoveryStatus.discovered,
+        discoveredServices: discoveredModel.availableServices,
+        methodsByService: discoveredModel.methodsByService,
+        discoveryMessage: discoveredModel.statusMessage,
+        result: discoveredModel,
+      );
+
+      if (!failed &&
+          discoveredModel.serviceName.isNotEmpty &&
+          discoveredModel.methodName.isNotEmpty) {
+        await loadRequestSchema(discoveredModel);
+      }
+    } catch (e) {
+      state = state.copyWith(
+        connectionState: GrpcConnectionState.disconnected,
+        discoveryStatus: GrpcDiscoveryStatus.error,
+        discoveryMessage: e.toString(),
+      );
+    }
+  }
+
   Future<void> executeCall(GrpcRequestModel model) async {
     final previousState = state;
     state = previousState.copyWith(

@@ -314,6 +314,9 @@ class CollectionStateNotifier
         requestId: rId,
         apiType: apiType,
       );
+      final resolvedTargetApiTypeUrl = targetApiTypeUrl.isNotEmpty
+          ? targetApiTypeUrl
+          : (currentHttpRequestModel?.url ?? '');
 
       final defaultModel = ref.read(settingsProvider).defaultAIModel;
       newModel = switch (apiType) {
@@ -329,7 +332,7 @@ class CollectionStateNotifier
             description: description ?? currentModel.description,
             httpRequestModel: (currentHttpRequestModel ??
                 const HttpRequestModel())
-              .copyWith(url: targetApiTypeUrl),
+              .copyWith(url: resolvedTargetApiTypeUrl),
             aiRequestModel: null,
           ),
 
