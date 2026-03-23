@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:better_networking/better_networking.dart';
@@ -107,6 +108,8 @@ class GrpcService {
   // Cache for method input/output message types: "Service/Method" -> (inputType, outputType)
   static final Map<String, (String, String)> _methodTypeCache = {};
 
+  static const _emptyMetadata = <String, String>{};
+
   // Reuse channels per endpoint to avoid disconnect/reconnect between invocations.
   final Map<String, $grpc.ClientChannel> _channelPool = {};
 
@@ -187,7 +190,7 @@ class GrpcService {
       );
 
       // Execute unary call over gRPC channel.
-      final responseBytes = await _callUnaryMethod(
+      final unaryResult = await _callUnaryMethod(
         model.host,
         model.port,
         model.useTls,
@@ -199,7 +202,7 @@ class GrpcService {
 
       // Decode response bytes back to JSON.
       final responseJson = _protobufToJson(
-        responseBytes,
+        unaryResult.responseBytes,
         outputTypeStr,
         descriptors,
       );
@@ -209,6 +212,9 @@ class GrpcService {
         responseJson: responseJson,
         statusCode: 'OK',
         statusMessage: 'gRPC unary invocation completed',
+        headers: unaryResult.headers,
+        trailers: unaryResult.trailers,
+        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
         responseDurationMs: stopwatch.elapsedMilliseconds,
       );
     } catch (e) {
@@ -216,17 +222,265 @@ class GrpcService {
       final errorMsg =
           e is _GrpcServiceException ? e.message : e.toString();
       final reflectionFailed = errorMsg.toLowerCase().contains('reflection');
+      final grpcError = e is $grpc.GrpcError ? e : null;
+      final grpcStatusName = grpcError == null
+          ? null
+          : ($grpc.StatusCode.name(grpcError.code) ?? 'UNKNOWN');
       return model.copyWith(
         descriptorSource: reflectionFailed
             ? GrpcDescriptorSource.protoUploadRequired
             : model.descriptorSource,
-        errorMessage: errorMsg,
-        statusCode: reflectionFailed ? 'UNAVAILABLE' : 'UNKNOWN',
+        errorMessage: grpcError == null ? errorMsg : _formatGrpcError(grpcError),
+        statusCode: grpcStatusName ?? (reflectionFailed ? 'UNAVAILABLE' : 'UNKNOWN'),
         statusMessage: reflectionFailed
             ? 'Reflection unavailable. Upload .proto files to continue.'
-            : model.statusMessage,
+            : (grpcError?.message ?? 'gRPC unary invocation failed'),
+        headers: _emptyMetadata,
+        trailers: grpcError?.trailers ?? _emptyMetadata,
+        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
         responseDurationMs: stopwatch.elapsedMilliseconds,
       );
+    }
+  }
+
+  Future<GrpcRequestModel> callServerStreaming(GrpcRequestModel model) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final payload = model.requestJson.trim().isEmpty
+          ? <String, dynamic>{}
+          : jsonDecode(model.requestJson);
+      if (payload is! Map<String, dynamic>) {
+        throw _GrpcServiceException(
+          'Server streaming expects a JSON object request payload.',
+        );
+      }
+
+      final endpoint = '${model.host}:${model.port}';
+      final descriptors = _descriptorCache[endpoint] ??
+          await _loadDescriptorsViaReflection(
+            host: model.host,
+            port: model.port,
+            useTls: model.useTls,
+            targetSymbol: '${model.serviceName}.${model.methodName}',
+          );
+      _descriptorCache[endpoint] = descriptors;
+
+      final (inputTypeStr, outputTypeStr) =
+          _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
+
+      final requestBytes = _jsonToProtobuf(payload, inputTypeStr, descriptors);
+      final streamResult = await _callStreamingMethod(
+        host: model.host,
+        port: model.port,
+        useTls: model.useTls,
+        serviceName: model.serviceName,
+        methodName: model.methodName,
+        requestBytesList: [requestBytes],
+        metadata: model.metadata,
+      );
+
+      final responses = streamResult.responseBytesList
+          .map((bytes) => _protobufToJson(bytes, outputTypeStr, descriptors))
+          .toList(growable: false);
+
+      stopwatch.stop();
+      return model.copyWith(
+        responseJson: responses.isEmpty ? null : responses.last,
+        streamResponses: responses,
+        statusCode: 'OK',
+        statusMessage: 'gRPC server-streaming invocation completed',
+        headers: streamResult.headers,
+        trailers: streamResult.trailers,
+        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        responseDurationMs: stopwatch.elapsedMilliseconds,
+      );
+    } catch (e) {
+      stopwatch.stop();
+      return _buildStreamingError(model, e, stopwatch.elapsedMilliseconds);
+    }
+  }
+
+  Future<GrpcRequestModel> callClientStreaming(GrpcRequestModel model) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final payload = model.requestJson.trim().isEmpty
+          ? <dynamic>[]
+          : jsonDecode(model.requestJson);
+      final requests = _normalizeStreamingPayload(payload);
+
+      final endpoint = '${model.host}:${model.port}';
+      final descriptors = _descriptorCache[endpoint] ??
+          await _loadDescriptorsViaReflection(
+            host: model.host,
+            port: model.port,
+            useTls: model.useTls,
+            targetSymbol: '${model.serviceName}.${model.methodName}',
+          );
+      _descriptorCache[endpoint] = descriptors;
+
+      final (inputTypeStr, outputTypeStr) =
+          _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
+
+      final requestBytes = requests
+          .map((obj) => _jsonToProtobuf(obj, inputTypeStr, descriptors))
+          .toList(growable: false);
+
+      final streamResult = await _callStreamingMethod(
+        host: model.host,
+        port: model.port,
+        useTls: model.useTls,
+        serviceName: model.serviceName,
+        methodName: model.methodName,
+        requestBytesList: requestBytes,
+        metadata: model.metadata,
+      );
+
+      final responses = streamResult.responseBytesList
+          .map((bytes) => _protobufToJson(bytes, outputTypeStr, descriptors))
+          .toList(growable: false);
+
+      stopwatch.stop();
+      return model.copyWith(
+        responseJson: responses.isEmpty ? null : responses.last,
+        streamResponses: responses,
+        statusCode: 'OK',
+        statusMessage: 'gRPC client-streaming invocation completed',
+        headers: streamResult.headers,
+        trailers: streamResult.trailers,
+        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        responseDurationMs: stopwatch.elapsedMilliseconds,
+      );
+    } catch (e) {
+      stopwatch.stop();
+      return _buildStreamingError(model, e, stopwatch.elapsedMilliseconds);
+    }
+  }
+
+  Future<GrpcRequestModel> callBidirectionalStreaming(
+    GrpcRequestModel model,
+  ) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final payload = model.requestJson.trim().isEmpty
+          ? <dynamic>[]
+          : jsonDecode(model.requestJson);
+      final requests = _normalizeStreamingPayload(payload);
+
+      final endpoint = '${model.host}:${model.port}';
+      final descriptors = _descriptorCache[endpoint] ??
+          await _loadDescriptorsViaReflection(
+            host: model.host,
+            port: model.port,
+            useTls: model.useTls,
+            targetSymbol: '${model.serviceName}.${model.methodName}',
+          );
+      _descriptorCache[endpoint] = descriptors;
+
+      final (inputTypeStr, outputTypeStr) =
+          _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
+
+      final requestBytes = requests
+          .map((obj) => _jsonToProtobuf(obj, inputTypeStr, descriptors))
+          .toList(growable: false);
+
+      final streamResult = await _callStreamingMethod(
+        host: model.host,
+        port: model.port,
+        useTls: model.useTls,
+        serviceName: model.serviceName,
+        methodName: model.methodName,
+        requestBytesList: requestBytes,
+        metadata: model.metadata,
+      );
+
+      final responses = streamResult.responseBytesList
+          .map((bytes) => _protobufToJson(bytes, outputTypeStr, descriptors))
+          .toList(growable: false);
+
+      stopwatch.stop();
+      return model.copyWith(
+        responseJson: responses.isEmpty ? null : responses.last,
+        streamResponses: responses,
+        statusCode: 'OK',
+        statusMessage: 'gRPC bidirectional streaming invocation completed',
+        headers: streamResult.headers,
+        trailers: streamResult.trailers,
+        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        responseDurationMs: stopwatch.elapsedMilliseconds,
+      );
+    } catch (e) {
+      stopwatch.stop();
+      return _buildStreamingError(model, e, stopwatch.elapsedMilliseconds);
+    }
+  }
+
+  List<Map<String, dynamic>> _normalizeStreamingPayload(dynamic payload) {
+    if (payload is Map<String, dynamic>) {
+      return [payload];
+    }
+    if (payload is List) {
+      return payload
+          .whereType<Map>()
+          .map((m) => m.map((key, value) => MapEntry(key.toString(), value)))
+          .toList(growable: false);
+    }
+    throw _GrpcServiceException(
+      'Streaming payload must be a JSON object or an array of JSON objects.',
+    );
+  }
+
+  GrpcRequestModel _buildStreamingError(
+    GrpcRequestModel model,
+    Object error,
+    int elapsedMs,
+  ) {
+    final errorMsg =
+        error is _GrpcServiceException ? error.message : error.toString();
+    final grpcError = error is $grpc.GrpcError ? error : null;
+    final reflectionFailed = errorMsg.toLowerCase().contains('reflection');
+    final grpcStatusName = grpcError == null
+        ? null
+        : ($grpc.StatusCode.name(grpcError.code) ?? 'UNKNOWN');
+    return model.copyWith(
+      descriptorSource: reflectionFailed
+          ? GrpcDescriptorSource.protoUploadRequired
+          : model.descriptorSource,
+      responseJson: null,
+      streamResponses: const [],
+      statusCode: grpcStatusName ?? (reflectionFailed ? 'UNAVAILABLE' : 'UNKNOWN'),
+      statusMessage: reflectionFailed
+          ? 'Reflection unavailable. Upload .proto files to continue.'
+          : (grpcError?.message ?? 'gRPC streaming invocation failed'),
+      errorMessage: grpcError == null ? errorMsg : _formatGrpcError(grpcError),
+      headers: _emptyMetadata,
+      trailers: grpcError?.trailers ?? _emptyMetadata,
+      timeline: _buildTimeline(model.host, invokeMs: elapsedMs),
+      responseDurationMs: elapsedMs,
+    );
+  }
+
+  Map<String, int> _buildTimeline(String host, {required int invokeMs}) {
+    // gRPC package does not expose per-phase network timing directly.
+    final dnsMs = _estimateDnsMs(host);
+    return <String, int>{
+      'dns': dnsMs,
+      'connect': 0,
+      'tls': 0,
+      'invoke': invokeMs,
+    };
+  }
+
+  int _estimateDnsMs(String host) {
+    try {
+      final uri = Uri.tryParse(host);
+      final resolvedHost = uri?.host.isNotEmpty == true ? uri!.host : host;
+      if (InternetAddress.tryParse(resolvedHost) != null || resolvedHost.isEmpty) {
+        return 0;
+      }
+      // Precise DNS timing is not exposed in this gRPC stack without custom transport hooks.
+      return 0;
+    } catch (_) {
+      return 0;
     }
   }
 
@@ -599,7 +853,7 @@ class GrpcService {
   }
 
   /// Executes a unary method call over the gRPC channel.
-  Future<List<int>> _callUnaryMethod(
+  Future<_GrpcUnaryCallResult> _callUnaryMethod(
     String host,
     int port,
     bool useTls,
@@ -639,7 +893,51 @@ class GrpcService {
       throw _GrpcServiceException('No response from server');
     }
 
-    return responses.first;
+    return _GrpcUnaryCallResult(
+      responseBytes: responses.first,
+      headers: await call.headers,
+      trailers: await call.trailers,
+    );
+  }
+
+  Future<_GrpcStreamingCallResult> _callStreamingMethod({
+    required String host,
+    required int port,
+    required bool useTls,
+    required String serviceName,
+    required String methodName,
+    required List<List<int>> requestBytesList,
+    required Map<String, String> metadata,
+  }) async {
+    final channel = _getOrCreateChannel(host, port, useTls);
+
+    final method = $grpc.ClientMethod<List<int>, List<int>>(
+      '/$serviceName/$methodName',
+      (List<int> value) => value,
+      (List<int> value) => value,
+    );
+
+    final callOptions = $grpc.CallOptions(
+      metadata: metadata,
+      timeout: const Duration(seconds: 30),
+    );
+
+    final call = channel.createCall(
+      method,
+      Stream.fromIterable(requestBytesList),
+      callOptions,
+    );
+
+    final responses = <List<int>>[];
+    await for (final resp in call.response) {
+      responses.add(resp);
+    }
+
+    return _GrpcStreamingCallResult(
+      responseBytesList: responses,
+      headers: await call.headers,
+      trailers: await call.trailers,
+    );
   }
 
   $grpc.ClientChannel _getOrCreateChannel(String host, int port, bool useTls) {
@@ -658,6 +956,14 @@ class GrpcService {
     );
     _channelPool[key] = channel;
     return channel;
+  }
+
+  String _formatGrpcError($grpc.GrpcError error) {
+    final codeName = $grpc.StatusCode.name(error.code) ?? 'UNKNOWN';
+    final message = (error.message == null || error.message!.trim().isEmpty)
+        ? 'No error message'
+        : error.message!.trim();
+    return 'Code: ${error.code} ($codeName)\nMessage: "$message"';
   }
 
   GrpcFieldKind _kindForField($descriptor.FieldDescriptorProto field) {
@@ -726,6 +1032,30 @@ class GrpcService {
     _channelPool.clear();
     await Future.wait(channels.map((c) => c.shutdown()));
   }
+}
+
+class _GrpcUnaryCallResult {
+  const _GrpcUnaryCallResult({
+    required this.responseBytes,
+    required this.headers,
+    required this.trailers,
+  });
+
+  final List<int> responseBytes;
+  final Map<String, String> headers;
+  final Map<String, String> trailers;
+}
+
+class _GrpcStreamingCallResult {
+  const _GrpcStreamingCallResult({
+    required this.responseBytesList,
+    required this.headers,
+    required this.trailers,
+  });
+
+  final List<List<int>> responseBytesList;
+  final Map<String, String> headers;
+  final Map<String, String> trailers;
 }
 
 /// Simple dynamic message builder for JSON<->Protobuf conversion.

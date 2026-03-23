@@ -25,6 +25,14 @@ enum GrpcBytesDisplayMode {
   final String label;
 }
 
+enum GrpcRequestInputMode {
+  form('Form Mode'),
+  json('JSON Mode');
+
+  const GrpcRequestInputMode(this.label);
+  final String label;
+}
+
 class _EditGrpcRequestPaneState
     extends ConsumerState<EditGrpcRequestPane> {
   static const _kDefaultGrpcPort = '443';
@@ -37,10 +45,14 @@ class _EditGrpcRequestPaneState
   final _bodyCtrl = TextEditingController(text: _kDefaultGrpcBody);
   GrpcCallType _callType = GrpcCallType.unary;
   GrpcBytesDisplayMode _bytesDisplayMode = GrpcBytesDisplayMode.utf8;
+  GrpcRequestInputMode _requestInputMode = GrpcRequestInputMode.form;
   bool _useTls = true;
+  bool _showMetadataEditor = false;
   List<String> _uploadedProtoFiles = const [];
   final Map<String, dynamic> _schemaFormValues = {};
   String _lastSchemaKey = '';
+  final Map<String, String> _metadata = {};
+  final Map<String, String> _methodBodies = {};
 
   @override
   void initState() {
@@ -68,6 +80,18 @@ class _EditGrpcRequestPaneState
     final hasReflectionDiscovery =
       session.discoveryStatus == GrpcDiscoveryStatus.discovered &&
       session.discoveredServices.isNotEmpty;
+    final totalWidth = MediaQuery.sizeOf(context).width;
+    final explorerWidth = (totalWidth >= 1400
+      ? 320.0
+      : totalWidth >= 1100
+        ? 280.0
+        : 220.0)
+      .clamp(200.0, 320.0);
+    final canInvoke = session.connectionState == GrpcConnectionState.connected &&
+      !session.isLoading &&
+      session.discoveryStatus != GrpcDiscoveryStatus.requiresProtoUpload &&
+      _serviceCtrl.text.trim().isNotEmpty &&
+      _methodCtrl.text.trim().isNotEmpty;
     final schemaKey = session.requestSchema
         .map((f) => '${f.jsonName}:${f.kind.name}:${f.isRepeated}')
         .join('|');
@@ -82,369 +106,248 @@ class _EditGrpcRequestPaneState
       }
     });
 
-    return Row(
+    final endpointDisplay =
+        '${_useTls ? 'grpcs' : 'grpc'}://${_hostCtrl.text.trim().isEmpty ? 'host' : _hostCtrl.text.trim()}:${int.tryParse(_portCtrl.text) ?? 443}';
+
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // ── Left: Configuration panel ───────────────────────
-        SizedBox(
-          width: 320,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Endpoint',
-                    style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 3,
-                      child: TextField(
-                        controller: _hostCtrl,
-                        enabled: !session.isConnected,
-                        onChanged: (_) => _persistGrpcDraft(),
-                        decoration: const InputDecoration(
-                          labelText: 'Host',
-                          hintText: 'grpc.example.com',
-                          border: OutlineInputBorder(),
-                          contentPadding:
-                              EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 10),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        controller: _portCtrl,
-                        enabled: !session.isConnected,
-                        onChanged: (_) => _persistGrpcDraft(),
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Port',
-                          border: OutlineInputBorder(),
-                          contentPadding:
-                              EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 10),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: _useTls,
-                  onChanged: session.isConnected
-                      ? null
-                      : (v) => setState(() {
-                          _useTls = v;
-                          _persistGrpcDraft();
-                        }),
-                  title: const Text('TLS'),
-                  subtitle: const Text('grpcs://'),
-                  visualDensity: VisualDensity.compact,
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: _GrpcConnectButton(
-                    state: session.connectionState,
-                    isBusy: session.isLoading,
-                    onConnect: () => _discover(notifier),
-                    onDisconnect: () => _disconnect(notifier),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                _GrpcStatusStrip(session: session),
-                if (session.discoveryMessage != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    session.discoveryMessage!,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-                if (session.discoveryStatus == GrpcDiscoveryStatus.requiresProtoUpload) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: colorScheme.errorContainer,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Reflection unavailable. Upload .proto files.',
-                          style: TextStyle(color: colorScheme.onErrorContainer),
-                        ),
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          onPressed: _uploadProto,
-                          icon: const Icon(Icons.upload_file_rounded),
-                          label: const Text('Upload .proto'),
-                        ),
-                        if (_uploadedProtoFiles.isNotEmpty)
-                          Text(
-                            _uploadedProtoFiles.join(', '),
-                            style: TextStyle(
-                              color: colorScheme.onErrorContainer,
-                              fontSize: 12,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ],
-                const Divider(height: 24),
-                Text('Service',
-                    style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
-                if (session.discoveredServices.isNotEmpty) ...[
-                  DropdownButtonFormField<String>(
-                    isExpanded: true,
-                    value: session.discoveredServices.contains(_serviceCtrl.text)
-                        ? _serviceCtrl.text
-                        : null,
-                    decoration: const InputDecoration(
-                      labelText: 'Discovered service',
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                    ),
-                    items: session.discoveredServices
-                        .map(
-                          (s) => DropdownMenuItem(
-                            value: s,
-                            child: Text(
-                              s,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    selectedItemBuilder: (context) => session.discoveredServices
-                        .map(
-                          (s) => Text(
-                            s,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (v) {
-                      if (v == null) return;
-                      setState(() {
-                        _serviceCtrl.text = v;
-                        final methods = session.methodsByService[v] ?? const [];
-                        if (methods.isNotEmpty) {
-                          _methodCtrl.text = methods.first;
-                        }
-                        _persistGrpcDraft();
-                      });
-                      _maybeLoadSchema(notifier);
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                if (!hasReflectionDiscovery) ...[
-                  TextField(
-                    controller: _serviceCtrl,
-                    onChanged: (_) {
-                      _persistGrpcDraft();
-                      _maybeLoadSchema(notifier);
-                    },
-                    decoration: const InputDecoration(
-                      labelText: 'Service name',
-                      hintText: 'helloworld.Greeter',
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 10),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                if ((session.methodsByService[_serviceCtrl.text] ?? const []).isNotEmpty) ...[
-                  DropdownButtonFormField<String>(
-                    isExpanded: true,
-                    value: (session.methodsByService[_serviceCtrl.text] ?? const [])
-                            .contains(_methodCtrl.text)
-                        ? _methodCtrl.text
-                        : null,
-                    decoration: const InputDecoration(
-                      labelText: 'Discovered method',
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                    ),
-                    items: (session.methodsByService[_serviceCtrl.text] ?? const [])
-                        .map(
-                          (m) => DropdownMenuItem(
-                            value: m,
-                            child: Text(
-                              m,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    selectedItemBuilder: (context) =>
-                        (session.methodsByService[_serviceCtrl.text] ?? const [])
-                            .map(
-                              (m) => Text(
-                                m,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            )
-                            .toList(),
-                    onChanged: (v) {
-                      if (v == null) return;
-                      setState(() {
-                        _methodCtrl.text = v;
-                        _persistGrpcDraft();
-                      });
-                      _maybeLoadSchema(notifier);
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                if (!hasReflectionDiscovery) ...[
-                  TextField(
-                    controller: _methodCtrl,
-                    onChanged: (_) {
-                      _persistGrpcDraft();
-                      _maybeLoadSchema(notifier);
-                    },
-                    decoration: const InputDecoration(
-                      labelText: 'Method name',
-                      hintText: 'SayHello',
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 10),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ] else ...[
-                  const SizedBox(height: 4),
-                ],
-                Text('Call type',
-                    style: Theme.of(context).textTheme.labelMedium),
-                const SizedBox(height: 6),
-                DropdownButtonFormField<GrpcCallType>(
-                  isExpanded: true,
-                  value: _callType,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    contentPadding:
-                        EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 10),
-                  ),
-                  items: GrpcCallType.values
-                      .map(
-                        (t) => DropdownMenuItem(
-                          value: t,
-                          child: Text(t.label),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (v) =>
-                      setState(() {
-                        _callType = v ?? GrpcCallType.unary;
-                        _persistGrpcDraft();
-                      }),
-                ),
-                const Divider(height: 24),
-                // Invoke button
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: session.isLoading ||
-                            session.discoveryStatus ==
-                                GrpcDiscoveryStatus.requiresProtoUpload
-                        ? null
-                        : () => _invoke(notifier),
-                    icon: session.isLoading
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child:
-                                CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Invoke'),
-                  ),
-                ),
-              ],
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerLow,
+            border: Border(
+              bottom: BorderSide(color: colorScheme.outlineVariant),
             ),
           ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  endpointDisplay,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+              ),
+              const SizedBox(width: 8),
+              _GrpcStatusStrip(session: session),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 140,
+                child: _GrpcConnectButton(
+                  state: session.connectionState,
+                  isBusy: session.isLoading,
+                  onConnect: () => _discover(notifier),
+                  onDisconnect: () => _disconnect(notifier),
+                ),
+              ),
+            ],
+          ),
         ),
-
-        const VerticalDivider(width: 1),
-
-        // ── Right: Request body + Response ──────────────────
         Expanded(
-          child: Column(
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Method signature display
-              if (session.methodSignature != null)
-                Padding(
+              SizedBox(
+                width: explorerWidth,
+                child: SingleChildScrollView(
                   padding: const EdgeInsets.all(12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Method Signature',
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: colorScheme.outline)),
-                      const SizedBox(height: 4),
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: colorScheme.surfaceContainerLowest,
-                          border: Border.all(color: colorScheme.outlineVariant),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Text(
-                            session.methodSignature!.toFormattedString(),
-                            style: TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 12,
-                              color: colorScheme.onSurface,
-                            ),
+                      Text('Service Explorer',
+                          style: Theme.of(context).textTheme.titleSmall),
+                      const SizedBox(height: 8),
+                      if (!hasReflectionDiscovery) ...[
+                        TextField(
+                          controller: _hostCtrl,
+                          enabled: !session.isConnected,
+                          onChanged: (_) => _persistGrpcDraft(),
+                          decoration: const InputDecoration(
+                            labelText: 'Host',
+                            hintText: 'grpc.example.com',
+                            border: OutlineInputBorder(),
+                            contentPadding:
+                                EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 12),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: _portCtrl,
+                          enabled: !session.isConnected,
+                          onChanged: (_) => _persistGrpcDraft(),
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Port',
+                            border: OutlineInputBorder(),
+                            contentPadding:
+                                EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          value: _useTls,
+                          onChanged: session.isConnected
+                              ? null
+                              : (v) => setState(() {
+                                  _useTls = v;
+                                  _persistGrpcDraft();
+                                }),
+                          title: const Text('TLS'),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: _serviceCtrl,
+                          onChanged: (_) {
+                            _persistGrpcDraft();
+                            _maybeLoadSchema(notifier);
+                          },
+                          decoration: const InputDecoration(
+                            labelText: 'Service name',
+                            hintText: 'helloworld.Greeter',
+                            border: OutlineInputBorder(),
+                            contentPadding:
+                                EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: _methodCtrl,
+                          onChanged: (_) {
+                            _persistGrpcDraft();
+                            _maybeLoadSchema(notifier);
+                          },
+                          decoration: const InputDecoration(
+                            labelText: 'Method name',
+                            hintText: 'SayHello',
+                            border: OutlineInputBorder(),
+                            contentPadding:
+                                EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          ),
+                        ),
+                      ] else ...[
+                        _GrpcMethodExplorer(
+                          methodsByService: session.methodsByService,
+                          selectedService: _serviceCtrl.text,
+                          selectedMethod: _methodCtrl.text,
+                          onSelect: (service, method) {
+                            setState(() {
+                              _serviceCtrl.text = service;
+                              _methodCtrl.text = method;
+                              _restoreBodyForCurrentMethod();
+                              _initializeSchemaFormValues(session.requestSchema);
+                              _persistGrpcDraft();
+                            });
+                            _maybeLoadSchema(notifier);
+                          },
+                        ),
+                      ],
+                      if (session.discoveryMessage != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          session.discoveryMessage!,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                      if (session.discoveryStatus ==
+                          GrpcDiscoveryStatus.requiresProtoUpload) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: colorScheme.errorContainer,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Reflection unavailable. Upload .proto files.',
+                                style:
+                                    TextStyle(color: colorScheme.onErrorContainer),
+                              ),
+                              const SizedBox(height: 8),
+                              OutlinedButton.icon(
+                                onPressed: _uploadProto,
+                                icon: const Icon(Icons.upload_file_rounded),
+                                label: const Text('Upload .proto'),
+                              ),
+                              if (_uploadedProtoFiles.isNotEmpty)
+                                Text(
+                                  _uploadedProtoFiles.join(', '),
+                                  style: TextStyle(
+                                    color: colorScheme.onErrorContainer,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
-              // Request body
+              ),
+              const VerticalDivider(width: 1),
               Expanded(
+                flex: 5,
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(session.requestSchema.isEmpty
-                              ? 'Request Body (JSON)'
-                              : 'Request Body (Schema)',
-                          style:
-                              Theme.of(context).textTheme.titleSmall),
+                      Text('Request Builder',
+                          style: Theme.of(context).textTheme.titleSmall),
                       const SizedBox(height: 6),
+                      if (session.methodSignature != null)
+                        Text(
+                          session.methodSignature!.toFormattedString(),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelMedium,
+                        ),
+                      const SizedBox(height: 6),
+                      if (session.requestSchema.isNotEmpty)
+                        SegmentedButton<GrpcRequestInputMode>(
+                          showSelectedIcon: false,
+                          segments: GrpcRequestInputMode.values
+                              .map(
+                                (mode) => ButtonSegment<GrpcRequestInputMode>(
+                                  value: mode,
+                                  label: Text(mode.label),
+                                ),
+                              )
+                              .toList(),
+                          selected: {_requestInputMode},
+                          onSelectionChanged: (selection) {
+                            final next = selection.first;
+                            setState(() {
+                              _requestInputMode = next;
+                              if (next == GrpcRequestInputMode.form) {
+                                _initializeSchemaFormValues(session.requestSchema);
+                              } else {
+                                _maybePopulateMockJsonForSchema(session.requestSchema);
+                              }
+                            });
+                          },
+                        ),
+                      const SizedBox(height: 8),
+                      if (_serviceCtrl.text.trim().isEmpty ||
+                          _methodCtrl.text.trim().isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            'Select a method from Service Explorer to build the request.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
                       Expanded(
                         child: session.isSchemaLoading
                             ? const Center(child: CircularProgressIndicator())
-                            : session.requestSchema.isNotEmpty
+                            : session.requestSchema.isNotEmpty &&
+                                    _requestInputMode == GrpcRequestInputMode.form
                                 ? _GrpcSchemaForm(
                                     schema: session.requestSchema,
                                     values: _schemaFormValues,
@@ -467,21 +370,116 @@ class _EditGrpcRequestPaneState
                                     ),
                                   ),
                       ),
+                      const SizedBox(height: 8),
+                      InkWell(
+                        onTap: () {
+                          setState(() {
+                            _showMetadataEditor = !_showMetadataEditor;
+                          });
+                        },
+                        borderRadius: BorderRadius.circular(6),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _showMetadataEditor
+                                    ? Icons.expand_less
+                                    : Icons.expand_more,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _metadata.isEmpty
+                                    ? 'Metadata (optional)'
+                                    : 'Metadata (${_metadata.length})',
+                                style: Theme.of(context).textTheme.labelMedium,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      if (_showMetadataEditor)
+                        _GrpcMetadataEditor(
+                          metadata: _metadata,
+                          onChanged: (updated) {
+                            setState(() {
+                              _metadata
+                                ..clear()
+                                ..addAll(updated);
+                              _persistGrpcDraft();
+                            });
+                          },
+                        ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 170,
+                            child: DropdownButtonFormField<GrpcCallType>(
+                              isExpanded: true,
+                              value: _callType,
+                              decoration: const InputDecoration(
+                                border: OutlineInputBorder(),
+                                contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 10),
+                              ),
+                              items: GrpcCallType.values
+                                  .map(
+                                    (t) => DropdownMenuItem(
+                                      value: t,
+                                      child: Text(t.label),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (v) => setState(() {
+                                _callType = v ?? GrpcCallType.unary;
+                                _persistGrpcDraft();
+                              }),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: canInvoke ? () => _invoke(notifier) : null,
+                              icon: session.isLoading
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.play_arrow_rounded),
+                              label: const Text('Invoke'),
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
               ),
-
-              const Divider(height: 1),
-
-              // Response panel
+              const VerticalDivider(width: 1),
               Expanded(
-                child: _GrpcResponsePanel(
-                  session: session,
-                  bytesDisplayMode: _bytesDisplayMode,
-                  onBytesDisplayModeChanged: (mode) {
-                    setState(() => _bytesDisplayMode = mode);
-                  },
+                flex: 4,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                      child: Text('Response',
+                          style: Theme.of(context).textTheme.titleSmall),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: _GrpcResponsePanel(
+                        session: session,
+                        bytesDisplayMode: _bytesDisplayMode,
+                        onBytesDisplayModeChanged: (mode) {
+                          setState(() => _bytesDisplayMode = mode);
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -499,6 +497,7 @@ class _EditGrpcRequestPaneState
       serviceName: _serviceCtrl.text.trim(),
       methodName: _methodCtrl.text.trim(),
       requestJson: _bodyCtrl.text,
+      metadata: _metadata,
       callType: _callType,
     );
     await notifier.discover(model);
@@ -533,13 +532,36 @@ class _EditGrpcRequestPaneState
     await notifier.disconnect(model);
   }
 
+  String _currentMethodKey() {
+    final service = _serviceCtrl.text.trim();
+    final method = _methodCtrl.text.trim();
+    if (service.isEmpty || method.isEmpty) return '';
+    return '$service/$method';
+  }
+
+  void _restoreBodyForCurrentMethod() {
+    final key = _currentMethodKey();
+    if (key.isEmpty) {
+      _bodyCtrl.text = _kDefaultGrpcBody;
+      return;
+    }
+    _bodyCtrl.text = _methodBodies[key] ?? _kDefaultGrpcBody;
+  }
+
   Future<void> _invoke(GrpcNotifier notifier) async {
-    if (_callType != GrpcCallType.unary) {
+    final session = ref.read(grpcNotifierProvider);
+    if (session.connectionState != GrpcConnectionState.connected) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Streaming invocation modes are now modelled but execution is pending.'),
-        ),
+        const SnackBar(content: Text('Connect to the endpoint before invoking.')),
+      );
+      return;
+    }
+
+    if (_serviceCtrl.text.trim().isEmpty || _methodCtrl.text.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a service and method before invoking.')),
       );
       return;
     }
@@ -552,11 +574,12 @@ class _EditGrpcRequestPaneState
       methodName: _methodCtrl.text.trim(),
       requestJson: _bodyCtrl.text,
       callType: _callType,
+      metadata: _metadata,
     );
-    await notifier.executeUnary(model);
+    await notifier.executeCall(model);
 
-    final session = ref.read(grpcNotifierProvider);
-    final result = session.result;
+    final updatedSession = ref.read(grpcNotifierProvider);
+    final result = updatedSession.result;
     final scheme = model.useTls ? 'grpcs' : 'grpc';
     final endpoint =
         '$scheme://${model.host}:${model.port}/${model.serviceName}/${model.methodName}';
@@ -588,6 +611,8 @@ class _EditGrpcRequestPaneState
         _useTls = true;
         _callType = GrpcCallType.unary;
         _uploadedProtoFiles = const [];
+        _metadata.clear();
+        _methodBodies.clear();
       });
       return;
     }
@@ -633,6 +658,26 @@ class _EditGrpcRequestPaneState
       _uploadedProtoFiles = ((grpcConfig['protoFiles'] as List?) ?? const [])
           .whereType<String>()
           .toList(growable: false);
+      _metadata.clear();
+      final metadataFromConfig = grpcConfig['metadata'] as Map?;
+      if (metadataFromConfig != null) {
+        _metadata.addAll(metadataFromConfig.cast<String, String>());
+      }
+      _methodBodies.clear();
+      final rawBodies = grpcConfig['methodBodies'];
+      if (rawBodies is Map) {
+        for (final entry in rawBodies.entries) {
+          final k = entry.key.toString();
+          final v = entry.value;
+          if (v is String) {
+            _methodBodies[k] = v;
+          }
+        }
+      }
+      final currentKey = _currentMethodKey();
+      if (currentKey.isNotEmpty && _methodBodies.containsKey(currentKey)) {
+        _bodyCtrl.text = _methodBodies[currentKey]!;
+      }
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -647,12 +692,19 @@ class _EditGrpcRequestPaneState
     final scheme = _useTls ? 'grpcs' : 'grpc';
     final url = host.isEmpty ? '' : '$scheme://$host:$port';
 
+    final methodKey = _currentMethodKey();
+    if (methodKey.isNotEmpty) {
+      _methodBodies[methodKey] = _bodyCtrl.text;
+    }
+
     final grpcConfig = <String, dynamic>{
       'serviceName': _serviceCtrl.text.trim(),
       'methodName': _methodCtrl.text.trim(),
       'useTls': _useTls,
       'callType': _callType.name,
       'protoFiles': _uploadedProtoFiles,
+      if (_metadata.isNotEmpty) 'metadata': _metadata,
+      if (_methodBodies.isNotEmpty) 'methodBodies': _methodBodies,
     };
 
     ref.read(collectionStateNotifierProvider.notifier).update(
@@ -678,8 +730,16 @@ class _EditGrpcRequestPaneState
       methodName: method,
       requestJson: _bodyCtrl.text,
       callType: _callType,
+      metadata: _metadata,
     );
     await notifier.loadRequestSchema(model);
+
+    // If the user is already in JSON mode, seed mock JSON as soon as schema arrives.
+    if (!mounted || _requestInputMode != GrpcRequestInputMode.json) {
+      return;
+    }
+    final updatedSession = ref.read(grpcNotifierProvider);
+    _maybePopulateMockJsonForSchema(updatedSession.requestSchema);
   }
 
   void _initializeSchemaFormValues(List<GrpcRequestFieldSchema> schema) {
@@ -700,6 +760,60 @@ class _EditGrpcRequestPaneState
     _schemaFormValues
       ..clear()
       ..addAll(parsedBody);
+  }
+
+  void _maybePopulateMockJsonForSchema(List<GrpcRequestFieldSchema> schema) {
+    if (schema.isEmpty || _hasSavedJsonForCurrentMethod()) {
+      return;
+    }
+    final mock = <String, dynamic>{
+      for (final field in schema)
+        field.jsonName: _mockValueForField(field),
+    };
+    _bodyCtrl.text = const JsonEncoder.withIndent('  ').convert(mock);
+    _initializeSchemaFormValues(schema);
+    _persistGrpcDraft();
+  }
+
+  bool _hasSavedJsonForCurrentMethod() {
+    final raw = _bodyCtrl.text.trim();
+    if (raw.isEmpty || raw == _kDefaultGrpcBody) {
+      return false;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.isNotEmpty;
+      }
+      // Non-map JSON (string/list/number) is still user-provided content.
+      return true;
+    } catch (_) {
+      // If JSON is invalid but non-empty, keep user input untouched.
+      return true;
+    }
+  }
+
+  dynamic _mockValueForField(GrpcRequestFieldSchema field) {
+    if (field.isRepeated) {
+      return <dynamic>[];
+    }
+    switch (field.kind) {
+      case GrpcFieldKind.string:
+      case GrpcFieldKind.bytes:
+        return '';
+      case GrpcFieldKind.boolType:
+        return false;
+      case GrpcFieldKind.intType:
+        return 0;
+      case GrpcFieldKind.doubleType:
+        return 0.0;
+      case GrpcFieldKind.enumType:
+        return field.enumValues.isNotEmpty ? field.enumValues.first : '';
+      case GrpcFieldKind.message:
+        return <String, dynamic>{};
+      case GrpcFieldKind.unknown:
+        return null;
+    }
   }
 
   void _updateSchemaField(GrpcRequestFieldSchema field, dynamic rawValue) {
@@ -751,6 +865,120 @@ class _EditGrpcRequestPaneState
   }
 }
 
+class _GrpcMethodExplorer extends StatefulWidget {
+  const _GrpcMethodExplorer({
+    required this.methodsByService,
+    required this.selectedService,
+    required this.selectedMethod,
+    required this.onSelect,
+  });
+
+  final Map<String, List<String>> methodsByService;
+  final String selectedService;
+  final String selectedMethod;
+  final void Function(String service, String method) onSelect;
+
+  @override
+  State<_GrpcMethodExplorer> createState() => _GrpcMethodExplorerState();
+}
+
+class _GrpcMethodExplorerState extends State<_GrpcMethodExplorer> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final services = widget.methodsByService.keys.toList()..sort();
+    final maxExplorerHeight = MediaQuery.sizeOf(context).height * 0.45;
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Material(
+          color: Colors.transparent,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
+                child: Text(
+                  'Method Explorer',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+              ),
+              SizedBox(
+                height: maxExplorerHeight.clamp(180.0, 320.0),
+                child: Scrollbar(
+                  controller: _scrollController,
+                  thumbVisibility: services.length > 4,
+                  child: ListView.builder(
+                    controller: _scrollController,
+                    padding: EdgeInsets.zero,
+                    itemCount: services.length,
+                    itemBuilder: (context, index) {
+                      final service = services[index];
+                      final methods = List<String>.from(
+                        widget.methodsByService[service] ?? const <String>[],
+                      )..sort();
+                      final serviceIsSelected = service == widget.selectedService;
+                      return ExpansionTile(
+                        key: ValueKey('grpc-svc-$service'),
+                        initiallyExpanded: serviceIsSelected,
+                        tilePadding:
+                            const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                        childrenPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: Text(
+                          service,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontWeight:
+                                serviceIsSelected ? FontWeight.w600 : FontWeight.w400,
+                          ),
+                        ),
+                        children: methods.map((method) {
+                          final methodIsSelected =
+                              service == widget.selectedService && method == widget.selectedMethod;
+                          return ListTile(
+                            dense: true,
+                            visualDensity: VisualDensity.compact,
+                            contentPadding:
+                                const EdgeInsets.symmetric(horizontal: 20),
+                            minVerticalPadding: 0,
+                            title: Text(
+                              method,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            selected: methodIsSelected,
+                            selectedTileColor: colorScheme.secondaryContainer,
+                            onTap: () => widget.onSelect(service, method),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _GrpcSchemaForm extends StatelessWidget {
   const _GrpcSchemaForm({
     required this.schema,
@@ -784,7 +1012,7 @@ class _GrpcSchemaForm extends StatelessWidget {
             );
           case GrpcFieldKind.enumType:
             return DropdownButtonFormField<String>(
-              key: ValueKey('schema-${field.jsonName}-${currentValue ?? ''}'),
+              key: ValueKey('schema-${field.jsonName}'),
               isExpanded: true,
               value: currentValue is String && field.enumValues.contains(currentValue)
                   ? currentValue
@@ -800,7 +1028,7 @@ class _GrpcSchemaForm extends StatelessWidget {
             );
           case GrpcFieldKind.message:
             return TextFormField(
-              key: ValueKey('schema-${field.jsonName}-${currentValue ?? ''}'),
+              key: ValueKey('schema-${field.jsonName}'),
               initialValue: currentValue is Map
                   ? const JsonEncoder.withIndent('  ').convert(currentValue)
                   : (currentValue?.toString() ?? ''),
@@ -815,7 +1043,7 @@ class _GrpcSchemaForm extends StatelessWidget {
           case GrpcFieldKind.intType:
           case GrpcFieldKind.doubleType:
             return TextFormField(
-              key: ValueKey('schema-${field.jsonName}-${currentValue ?? ''}'),
+              key: ValueKey('schema-${field.jsonName}'),
               initialValue: currentValue?.toString() ?? '',
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
@@ -828,7 +1056,7 @@ class _GrpcSchemaForm extends StatelessWidget {
           case GrpcFieldKind.bytes:
           case GrpcFieldKind.unknown:
             return TextFormField(
-              key: ValueKey('schema-${field.jsonName}-${currentValue ?? ''}'),
+              key: ValueKey('schema-${field.jsonName}'),
               initialValue: currentValue is List
                   ? currentValue.join(', ')
                   : (currentValue?.toString() ?? ''),
@@ -847,7 +1075,142 @@ class _GrpcSchemaForm extends StatelessWidget {
   }
 }
 
-class _GrpcResponsePanel extends StatelessWidget {
+class _GrpcMetadataEditor extends StatefulWidget {
+  const _GrpcMetadataEditor({
+    required this.metadata,
+    required this.onChanged,
+  });
+
+  final Map<String, String> metadata;
+  final ValueChanged<Map<String, String>> onChanged;
+
+  @override
+  State<_GrpcMetadataEditor> createState() => _GrpcMetadataEditorState();
+}
+
+class _GrpcMetadataEditorState extends State<_GrpcMetadataEditor> {
+  late List<MapEntry<String, String>> _entries;
+
+  @override
+  void initState() {
+    super.initState();
+    _entries = widget.metadata.entries.toList(growable: true);
+    if (_entries.isEmpty) {
+      _entries.add(const MapEntry('', ''));
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _GrpcMetadataEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.metadata != widget.metadata) {
+      _entries = widget.metadata.entries.toList(growable: true);
+      if (_entries.isEmpty) {
+        _entries.add(const MapEntry('', ''));
+      }
+    }
+  }
+
+  void _emit() {
+    final next = <String, String>{};
+    for (final entry in _entries) {
+      final k = entry.key.trim();
+      final v = entry.value.trim();
+      if (k.isEmpty) continue;
+      next[k] = v;
+    }
+    widget.onChanged(next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Metadata', style: Theme.of(context).textTheme.labelMedium),
+        const SizedBox(height: 6),
+        ...List.generate(_entries.length, (index) {
+          final entry = _entries[index];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    initialValue: entry.key,
+                    decoration: const InputDecoration(
+                      labelText: 'Key',
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                    ),
+                    onChanged: (v) {
+                      _entries[index] = MapEntry(v, _entries[index].value);
+                      _emit();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextFormField(
+                    initialValue: entry.value,
+                    decoration: const InputDecoration(
+                      labelText: 'Value',
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                    ),
+                    onChanged: (v) {
+                      _entries[index] = MapEntry(_entries[index].key, v);
+                      _emit();
+                    },
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Remove',
+                  icon: const Icon(Icons.remove_circle_outline),
+                  onPressed: _entries.length == 1
+                      ? null
+                      : () {
+                          setState(() {
+                            _entries.removeAt(index);
+                            if (_entries.isEmpty) {
+                              _entries.add(const MapEntry('', ''));
+                            }
+                          });
+                          _emit();
+                        },
+                ),
+              ],
+            ),
+          );
+        }),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            onPressed: () {
+              setState(() {
+                _entries.add(const MapEntry('', ''));
+              });
+            },
+            icon: const Icon(Icons.add),
+            label: const Text('Add metadata'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+enum _GrpcResponseView {
+  body('Body'),
+  debug('Debug');
+
+  const _GrpcResponseView(this.label);
+  final String label;
+}
+
+class _GrpcResponsePanel extends StatefulWidget {
   const _GrpcResponsePanel({
     required this.session,
     required this.bytesDisplayMode,
@@ -859,8 +1222,16 @@ class _GrpcResponsePanel extends StatelessWidget {
   final ValueChanged<GrpcBytesDisplayMode> onBytesDisplayModeChanged;
 
   @override
+  State<_GrpcResponsePanel> createState() => _GrpcResponsePanelState();
+}
+
+class _GrpcResponsePanelState extends State<_GrpcResponsePanel> {
+  _GrpcResponseView _view = _GrpcResponseView.body;
+
+  @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final session = widget.session;
 
     if (session.status == GrpcCallStatus.idle) {
       return Center(
@@ -885,10 +1256,11 @@ class _GrpcResponsePanel extends StatelessWidget {
 
     final result = session.result;
     if (result == null) return const SizedBox();
+    final hasStreamResponses = result.streamResponses.isNotEmpty;
     final hasBytesFields = _responseHasBytesFields(result.responseJson);
     final renderedResponse = result.responseJson == null
       ? null
-      : _prettyJson(result.responseJson!, bytesDisplayMode);
+      : _prettyJson(result.responseJson!, widget.bytesDisplayMode);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -916,9 +1288,9 @@ class _GrpcResponsePanel extends StatelessWidget {
               SizedBox(
                 width: 110,
                 child: DropdownButton<GrpcBytesDisplayMode>(
-                  key: ValueKey('grpc-bytes-mode-${bytesDisplayMode.name}'),
+                  key: ValueKey('grpc-bytes-mode-${widget.bytesDisplayMode.name}'),
                   isExpanded: true,
-                  value: bytesDisplayMode,
+                  value: widget.bytesDisplayMode,
                   items: GrpcBytesDisplayMode.values
                       .map(
                         (m) => DropdownMenuItem(
@@ -934,12 +1306,28 @@ class _GrpcResponsePanel extends StatelessWidget {
                   onChanged: hasBytesFields
                       ? (v) {
                           if (v == null) return;
-                          onBytesDisplayModeChanged(v);
+                          widget.onBytesDisplayModeChanged(v);
                         }
                       : null,
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          SegmentedButton<_GrpcResponseView>(
+            showSelectedIcon: false,
+            segments: _GrpcResponseView.values
+                .map(
+                  (mode) => ButtonSegment<_GrpcResponseView>(
+                    value: mode,
+                    label: Text(mode.label),
+                  ),
+                )
+                .toList(),
+            selected: {_view},
+            onSelectionChanged: (selection) {
+              setState(() => _view = selection.first);
+            },
           ),
           const SizedBox(height: 10),
 
@@ -955,10 +1343,48 @@ class _GrpcResponsePanel extends StatelessWidget {
                       color: colorScheme.onErrorContainer,
                       fontFamily: 'monospace')),
             )
-          else if (result.responseJson != null)
+          else if (_view == _GrpcResponseView.body && hasStreamResponses)
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Stream Responses (${result.streamResponses.length})',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  ...result.streamResponses.asMap().entries.map(
+                    (entry) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerLow,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: SelectableText(
+                          '#${entry.key + 1}\n${_prettyJson(entry.value, widget.bytesDisplayMode)}',
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_view == _GrpcResponseView.body && result.responseJson != null)
             // Pretty-print JSON
             Container(
-              key: ValueKey('grpc-response-${bytesDisplayMode.name}'),
+              key: ValueKey('grpc-response-${widget.bytesDisplayMode.name}'),
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 color: colorScheme.surfaceContainerHighest,
@@ -971,6 +1397,36 @@ class _GrpcResponsePanel extends StatelessWidget {
                   fontSize: 13,
                 ),
               ),
+            ),
+
+          if (_view == _GrpcResponseView.debug && result.timeline.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _GrpcTimelineView(timeline: result.timeline),
+          ],
+
+          if (_view == _GrpcResponseView.debug && result.headers.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _GrpcMetadataView(
+              title: 'Headers',
+              entries: result.headers,
+            ),
+          ],
+
+          if (_view == _GrpcResponseView.debug && result.trailers.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _GrpcMetadataView(
+              title: 'Trailers',
+              entries: result.trailers,
+            ),
+          ],
+
+          if (_view == _GrpcResponseView.debug &&
+              result.timeline.isEmpty &&
+              result.headers.isEmpty &&
+              result.trailers.isEmpty)
+            Text(
+              'No debug metadata available for this response.',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
 
           if (result.statusMessage != null) ...[
@@ -1096,6 +1552,90 @@ class _GrpcResponsePanel extends StatelessWidget {
   }
 }
 
+class _GrpcMetadataView extends StatelessWidget {
+  const _GrpcMetadataView({
+    required this.title,
+    required this.entries,
+  });
+
+  final String title;
+  final Map<String, String> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 6),
+          ...entries.entries.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: SelectableText(
+                '${entry.key}: ${entry.value}',
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GrpcTimelineView extends StatelessWidget {
+  const _GrpcTimelineView({required this.timeline});
+
+  final Map<String, int> timeline;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final rows = <(String, int)>[
+      ('DNS', timeline['dns'] ?? 0),
+      ('Connect', timeline['connect'] ?? 0),
+      ('TLS', timeline['tls'] ?? 0),
+      ('Invoke', timeline['invoke'] ?? 0),
+    ];
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Timeline', style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 6),
+          ...rows.map(
+            (row) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                '${row.$1}: ${row.$2} ms',
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _GrpcConnectButton extends StatelessWidget {
   const _GrpcConnectButton({
     required this.state,
@@ -1157,7 +1697,6 @@ class _GrpcStatusStrip extends StatelessWidget {
     };
 
     return Container(
-      width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,

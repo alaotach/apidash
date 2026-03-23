@@ -33,9 +33,12 @@ class GrpcRequestModel {
     this.methodsByService = const {},
     this.protoFiles = const [],
     this.responseJson,
+    this.streamResponses = const [],
     this.statusCode,
     this.statusMessage,
+    this.headers = const {},
     this.trailers = const {},
+    this.timeline = const {},
     this.errorMessage,
     this.responseDurationMs,
   });
@@ -79,13 +82,23 @@ class GrpcRequestModel {
   /// JSON-decoded response from the server (null until a call completes).
   final String? responseJson;
 
+  /// JSON-decoded responses for streaming RPCs.
+  final List<String> streamResponses;
+
   /// gRPC status code string, e.g. `"OK"`, `"NOT_FOUND"`.
   final String? statusCode;
 
   final String? statusMessage;
 
+  /// Response headers returned by the server.
+  final Map<String, String> headers;
+
   /// Response trailers returned by the server.
   final Map<String, String> trailers;
+
+  /// Millisecond timing breakdown for the request pipeline.
+  /// Typical keys: dns, connect, tls, invoke.
+  final Map<String, int> timeline;
 
   /// Populated when the call fails with a gRPC or transport error.
   final String? errorMessage;
@@ -108,9 +121,12 @@ class GrpcRequestModel {
     Map<String, List<String>>? methodsByService,
     List<String>? protoFiles,
     String? responseJson,
+    List<String>? streamResponses,
     String? statusCode,
     String? statusMessage,
+    Map<String, String>? headers,
     Map<String, String>? trailers,
+    Map<String, int>? timeline,
     String? errorMessage,
     int? responseDurationMs,
   }) {
@@ -128,9 +144,12 @@ class GrpcRequestModel {
       methodsByService: methodsByService ?? this.methodsByService,
       protoFiles: protoFiles ?? this.protoFiles,
       responseJson: responseJson ?? this.responseJson,
+      streamResponses: streamResponses ?? this.streamResponses,
       statusCode: statusCode ?? this.statusCode,
       statusMessage: statusMessage ?? this.statusMessage,
+      headers: headers ?? this.headers,
       trailers: trailers ?? this.trailers,
+      timeline: timeline ?? this.timeline,
       errorMessage: errorMessage ?? this.errorMessage,
       responseDurationMs: responseDurationMs ?? this.responseDurationMs,
     );

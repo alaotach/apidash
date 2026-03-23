@@ -117,14 +117,22 @@ class GrpcNotifier extends StateNotifier<GrpcSessionState> {
     }
   }
 
-  Future<void> executeUnary(GrpcRequestModel model) async {
+  Future<void> executeCall(GrpcRequestModel model) async {
     final previousState = state;
     state = previousState.copyWith(
       status: GrpcCallStatus.calling,
       discoveryMessage: null,
     );
     try {
-      final result = await _service.callUnary(model);
+      final result = switch (model.callType) {
+        GrpcCallType.unary => await _service.callUnary(model),
+        GrpcCallType.serverStreaming =>
+          await _service.callServerStreaming(model),
+        GrpcCallType.clientStreaming =>
+          await _service.callClientStreaming(model),
+        GrpcCallType.bidirectionalStreaming =>
+          await _service.callBidirectionalStreaming(model),
+      };
       state = GrpcSessionState(
         status: result.errorMessage != null
             ? GrpcCallStatus.error
