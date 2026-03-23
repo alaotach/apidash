@@ -24,6 +24,7 @@ class GrpcSessionState {
     this.requestSchema = const [],
     this.isSchemaLoading = false,
     this.schemaError,
+    this.methodSignature,
     this.discoveryMessage,
     this.result,
   });
@@ -36,6 +37,7 @@ class GrpcSessionState {
   final List<GrpcRequestFieldSchema> requestSchema;
   final bool isSchemaLoading;
   final String? schemaError;
+  final GrpcMethodSignature? methodSignature;
   final String? discoveryMessage;
 
   /// The model is populated with response fields after a successful call.
@@ -53,6 +55,7 @@ class GrpcSessionState {
     List<GrpcRequestFieldSchema>? requestSchema,
     bool? isSchemaLoading,
     String? schemaError,
+    GrpcMethodSignature? methodSignature,
     String? discoveryMessage,
     GrpcRequestModel? result,
   }) {
@@ -65,6 +68,7 @@ class GrpcSessionState {
       requestSchema: requestSchema ?? this.requestSchema,
       isSchemaLoading: isSchemaLoading ?? this.isSchemaLoading,
       schemaError: schemaError,
+      methodSignature: methodSignature ?? this.methodSignature,
       discoveryMessage: discoveryMessage ?? this.discoveryMessage,
       result: result ?? this.result,
     );
@@ -158,6 +162,7 @@ class GrpcNotifier extends StateNotifier<GrpcSessionState> {
     if (model.serviceName.trim().isEmpty || model.methodName.trim().isEmpty) {
       state = state.copyWith(
         requestSchema: const [],
+        methodSignature: null,
         isSchemaLoading: false,
         schemaError: null,
       );
@@ -167,14 +172,17 @@ class GrpcNotifier extends StateNotifier<GrpcSessionState> {
     state = state.copyWith(isSchemaLoading: true, schemaError: null);
     try {
       final schema = await _service.getRequestSchema(model);
+      final signature = await _service.getMethodSignature(model);
       state = state.copyWith(
         requestSchema: schema,
+        methodSignature: signature,
         isSchemaLoading: false,
         schemaError: null,
       );
     } catch (e) {
       state = state.copyWith(
         requestSchema: const [],
+        methodSignature: null,
         isSchemaLoading: false,
         schemaError: e.toString(),
       );
@@ -189,6 +197,7 @@ class GrpcNotifier extends StateNotifier<GrpcSessionState> {
       discoveredServices: const [],
       methodsByService: const {},
       requestSchema: const [],
+      methodSignature: null,
       isSchemaLoading: false,
       schemaError: null,
       discoveryMessage: 'Disconnected',

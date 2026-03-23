@@ -41,6 +41,60 @@ class GrpcRequestFieldSchema {
   final String? messageType;
 }
 
+/// Holds the complete method signature with request/response schemas.
+class GrpcMethodSignature {
+  const GrpcMethodSignature({
+    required this.methodName,
+    required this.requestFields,
+    required this.responseFields,
+    required this.responseTypeName,
+  });
+
+  final String methodName;
+  final List<GrpcRequestFieldSchema> requestFields;
+  final List<GrpcRequestFieldSchema> responseFields;
+  final String responseTypeName;
+
+  /// Formats signature as: `MethodName(a: int32, b: string) → ResponseType { x: int, y: string }`
+  String toFormattedString() {
+    final requestSig = requestFields
+        .map((f) => '${f.jsonName}: ${_formatFieldType(f)}')
+        .join(', ');
+    final responseSig = responseFields
+        .map((f) => '${f.jsonName}: ${_formatFieldType(f)}')
+        .join(', ');
+    
+    final responseTypeShort = responseTypeName.split('.').last;
+    return '$methodName($requestSig) → $responseTypeShort { $responseSig }';
+  }
+
+  String _formatFieldType(GrpcRequestFieldSchema field) {
+    final base = _kindToString(field.kind);
+    return field.isRepeated ? '[$base]' : base;
+  }
+
+  String _kindToString(GrpcFieldKind kind) {
+    switch (kind) {
+      case GrpcFieldKind.string:
+        return 'string';
+      case GrpcFieldKind.bytes:
+        return 'bytes';
+      case GrpcFieldKind.boolType:
+        return 'bool';
+      case GrpcFieldKind.intType:
+        return 'int32';
+      case GrpcFieldKind.doubleType:
+        return 'double';
+      case GrpcFieldKind.enumType:
+        return 'enum';
+      case GrpcFieldKind.message:
+        return 'object';
+      case GrpcFieldKind.unknown:
+        return 'unknown';
+    }
+  }
+}
+
 /// Executes gRPC calls described by a [GrpcRequestModel].
 ///
 /// Uses native in-process reflection-driven descriptor resolution and dynamic
@@ -209,6 +263,71 @@ class GrpcService {
         messageType: kind == GrpcFieldKind.message ? field.typeName : null,
       );
     }).toList(growable: false);
+  }
+
+  /// Extracts the complete method signature with request and response schemas.
+  Future<GrpcMethodSignature> getMethodSignature(
+    GrpcRequestModel model,
+  ) async {
+    final endpoint = '${model.host}:${model.port}';
+    final descriptors = _descriptorCache[endpoint] ??
+        await _loadDescriptorsViaReflection(
+          host: model.host,
+          port: model.port,
+          useTls: model.useTls,
+          targetSymbol: '${model.serviceName}.${model.methodName}',
+        );
+    _descriptorCache[endpoint] = descriptors;
+
+    final (inputTypeStr, outputTypeStr) =
+        _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
+
+    // Extract request fields
+    final inputMessageDesc = _findMessageDescriptor(inputTypeStr, descriptors);
+    if (inputMessageDesc == null) {
+      throw _GrpcServiceException('Input message type not found: $inputTypeStr');
+    }
+
+    final requestFields = inputMessageDesc.field.map((field) {
+      final kind = _kindForField(field);
+      return GrpcRequestFieldSchema(
+        name: field.name,
+        jsonName: field.jsonName.isEmpty ? field.name : field.jsonName,
+        kind: kind,
+        isRepeated: field.label.value == 3,
+        enumValues: kind == GrpcFieldKind.enumType
+            ? _resolveEnumValues(field.typeName, descriptors)
+            : const [],
+        messageType: kind == GrpcFieldKind.message ? field.typeName : null,
+      );
+    }).toList(growable: false);
+
+    // Extract response fields
+    final outputMessageDesc = _findMessageDescriptor(outputTypeStr, descriptors);
+    if (outputMessageDesc == null) {
+      throw _GrpcServiceException('Output message type not found: $outputTypeStr');
+    }
+
+    final responseFields = outputMessageDesc.field.map((field) {
+      final kind = _kindForField(field);
+      return GrpcRequestFieldSchema(
+        name: field.name,
+        jsonName: field.jsonName.isEmpty ? field.name : field.jsonName,
+        kind: kind,
+        isRepeated: field.label.value == 3,
+        enumValues: kind == GrpcFieldKind.enumType
+            ? _resolveEnumValues(field.typeName, descriptors)
+            : const [],
+        messageType: kind == GrpcFieldKind.message ? field.typeName : null,
+      );
+    }).toList(growable: false);
+
+    return GrpcMethodSignature(
+      methodName: model.methodName,
+      requestFields: requestFields,
+      responseFields: responseFields,
+      responseTypeName: outputTypeStr,
+    );
   }
 
   /// Resolves service descriptors via server reflection.
