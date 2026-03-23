@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:better_networking/better_networking.dart';
 import 'package:grpc/grpc.dart' as $grpc;
+import 'package:path/path.dart' as p;
 
 import '../generated/google/protobuf/descriptor.pb.dart'
     as $descriptor;
@@ -169,6 +170,18 @@ class GrpcService {
       final descriptors = await _loadDescriptorsFromProtoFiles(model.protoFiles);
       _descriptorCache[endpoint] = descriptors;
       final discovered = _extractServicesAndMethods(descriptors);
+      if (discovered.$1.isEmpty) {
+        return model.copyWith(
+          descriptorSource: GrpcDescriptorSource.protoUploadRequired,
+          availableServices: const [],
+          methodsByService: const {},
+          statusCode: 'INVALID_ARGUMENT',
+          statusMessage:
+              'No services found in uploaded protos. Include files that define service blocks.',
+          errorMessage:
+              'Descriptor set loaded but no service definitions were discovered.',
+        );
+      }
       return model.copyWith(
         descriptorSource: GrpcDescriptorSource.protoUpload,
         availableServices: discovered.$1,
@@ -221,13 +234,16 @@ class GrpcService {
           _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
 
       // Encode JSON request as protobuf bytes.
+      final encodeTimer = Stopwatch()..start();
       final requestBytes = _jsonToProtobuf(
         jsonPayload,
         inputTypeStr,
         descriptors,
       );
+      encodeTimer.stop();
 
       // Execute unary call over gRPC channel.
+      final invokeTimer = Stopwatch()..start();
       final unaryResult = await _callUnaryMethod(
         model.host,
         model.port,
@@ -237,13 +253,16 @@ class GrpcService {
         requestBytes,
         model.metadata,
       );
+      invokeTimer.stop();
 
       // Decode response bytes back to JSON.
+      final decodeTimer = Stopwatch()..start();
       final responseJson = _protobufToJson(
         unaryResult.responseBytes,
         outputTypeStr,
         descriptors,
       );
+      decodeTimer.stop();
 
       stopwatch.stop();
       return model.copyWith(
@@ -252,7 +271,13 @@ class GrpcService {
         statusMessage: 'gRPC unary invocation completed',
         headers: unaryResult.headers,
         trailers: unaryResult.trailers,
-        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        timeline: _buildTimeline(
+          model.host,
+          invokeMs: invokeTimer.elapsedMilliseconds,
+          encodeMs: encodeTimer.elapsedMilliseconds,
+          decodeMs: decodeTimer.elapsedMilliseconds,
+          totalMs: stopwatch.elapsedMilliseconds,
+        ),
         responseDurationMs: stopwatch.elapsedMilliseconds,
       );
     } catch (e) {
@@ -275,7 +300,11 @@ class GrpcService {
             : (grpcError?.message ?? 'gRPC unary invocation failed'),
         headers: _emptyMetadata,
         trailers: grpcError?.trailers ?? _emptyMetadata,
-        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        timeline: _buildTimeline(
+          model.host,
+          invokeMs: stopwatch.elapsedMilliseconds,
+          totalMs: stopwatch.elapsedMilliseconds,
+        ),
         responseDurationMs: stopwatch.elapsedMilliseconds,
       );
     }
@@ -306,7 +335,10 @@ class GrpcService {
       final (inputTypeStr, outputTypeStr) =
           _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
 
+      final encodeTimer = Stopwatch()..start();
       final requestBytes = _jsonToProtobuf(payload, inputTypeStr, descriptors);
+      encodeTimer.stop();
+      final invokeTimer = Stopwatch()..start();
       final streamResult = await _callStreamingMethod(
         host: model.host,
         port: model.port,
@@ -316,10 +348,13 @@ class GrpcService {
         requestBytesList: [requestBytes],
         metadata: model.metadata,
       );
+      invokeTimer.stop();
 
+      final decodeTimer = Stopwatch()..start();
       final responses = streamResult.responseBytesList
           .map((bytes) => _protobufToJson(bytes, outputTypeStr, descriptors))
           .toList(growable: false);
+      decodeTimer.stop();
 
       stopwatch.stop();
       return model.copyWith(
@@ -329,7 +364,13 @@ class GrpcService {
         statusMessage: 'gRPC server-streaming invocation completed',
         headers: streamResult.headers,
         trailers: streamResult.trailers,
-        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        timeline: _buildTimeline(
+          model.host,
+          invokeMs: invokeTimer.elapsedMilliseconds,
+          encodeMs: encodeTimer.elapsedMilliseconds,
+          decodeMs: decodeTimer.elapsedMilliseconds,
+          totalMs: stopwatch.elapsedMilliseconds,
+        ),
         responseDurationMs: stopwatch.elapsedMilliseconds,
       );
     } catch (e) {
@@ -359,10 +400,13 @@ class GrpcService {
       final (inputTypeStr, outputTypeStr) =
           _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
 
+      final encodeTimer = Stopwatch()..start();
       final requestBytes = requests
           .map((obj) => _jsonToProtobuf(obj, inputTypeStr, descriptors))
           .toList(growable: false);
+      encodeTimer.stop();
 
+      final invokeTimer = Stopwatch()..start();
       final streamResult = await _callStreamingMethod(
         host: model.host,
         port: model.port,
@@ -372,10 +416,13 @@ class GrpcService {
         requestBytesList: requestBytes,
         metadata: model.metadata,
       );
+      invokeTimer.stop();
 
+      final decodeTimer = Stopwatch()..start();
       final responses = streamResult.responseBytesList
           .map((bytes) => _protobufToJson(bytes, outputTypeStr, descriptors))
           .toList(growable: false);
+      decodeTimer.stop();
 
       stopwatch.stop();
       return model.copyWith(
@@ -385,7 +432,13 @@ class GrpcService {
         statusMessage: 'gRPC client-streaming invocation completed',
         headers: streamResult.headers,
         trailers: streamResult.trailers,
-        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        timeline: _buildTimeline(
+          model.host,
+          invokeMs: invokeTimer.elapsedMilliseconds,
+          encodeMs: encodeTimer.elapsedMilliseconds,
+          decodeMs: decodeTimer.elapsedMilliseconds,
+          totalMs: stopwatch.elapsedMilliseconds,
+        ),
         responseDurationMs: stopwatch.elapsedMilliseconds,
       );
     } catch (e) {
@@ -417,10 +470,13 @@ class GrpcService {
       final (inputTypeStr, outputTypeStr) =
           _resolveMethodTypes(model.serviceName, model.methodName, descriptors);
 
+      final encodeTimer = Stopwatch()..start();
       final requestBytes = requests
           .map((obj) => _jsonToProtobuf(obj, inputTypeStr, descriptors))
           .toList(growable: false);
+      encodeTimer.stop();
 
+      final invokeTimer = Stopwatch()..start();
       final streamResult = await _callStreamingMethod(
         host: model.host,
         port: model.port,
@@ -430,10 +486,13 @@ class GrpcService {
         requestBytesList: requestBytes,
         metadata: model.metadata,
       );
+      invokeTimer.stop();
 
+      final decodeTimer = Stopwatch()..start();
       final responses = streamResult.responseBytesList
           .map((bytes) => _protobufToJson(bytes, outputTypeStr, descriptors))
           .toList(growable: false);
+      decodeTimer.stop();
 
       stopwatch.stop();
       return model.copyWith(
@@ -443,7 +502,13 @@ class GrpcService {
         statusMessage: 'gRPC bidirectional streaming invocation completed',
         headers: streamResult.headers,
         trailers: streamResult.trailers,
-        timeline: _buildTimeline(model.host, invokeMs: stopwatch.elapsedMilliseconds),
+        timeline: _buildTimeline(
+          model.host,
+          invokeMs: invokeTimer.elapsedMilliseconds,
+          encodeMs: encodeTimer.elapsedMilliseconds,
+          decodeMs: decodeTimer.elapsedMilliseconds,
+          totalMs: stopwatch.elapsedMilliseconds,
+        ),
         responseDurationMs: stopwatch.elapsedMilliseconds,
       );
     } catch (e) {
@@ -492,20 +557,34 @@ class GrpcService {
       errorMessage: grpcError == null ? errorMsg : _formatGrpcError(grpcError),
       headers: _emptyMetadata,
       trailers: grpcError?.trailers ?? _emptyMetadata,
-      timeline: _buildTimeline(model.host, invokeMs: elapsedMs),
+      timeline: _buildTimeline(
+        model.host,
+        invokeMs: elapsedMs,
+        totalMs: elapsedMs,
+      ),
       responseDurationMs: elapsedMs,
     );
   }
 
-  Map<String, int> _buildTimeline(String host, {required int invokeMs}) {
+  Map<String, int> _buildTimeline(
+    String host, {
+    required int invokeMs,
+    int? encodeMs,
+    int? decodeMs,
+    int? totalMs,
+  }) {
     // gRPC package does not expose per-phase network timing directly.
     final dnsMs = _estimateDnsMs(host);
-    return <String, int>{
+    final timeline = <String, int>{
       'dns': dnsMs,
       'connect': 0,
       'tls': 0,
       'invoke': invokeMs,
+      if (encodeMs != null) 'encode': encodeMs,
+      if (decodeMs != null) 'decode': decodeMs,
+      if (totalMs != null) 'total': totalMs,
     };
+    return timeline;
   }
 
   int _estimateDnsMs(String host) {
@@ -667,10 +746,26 @@ class GrpcService {
       throw _GrpcServiceException('Selected .proto files do not exist.');
     }
 
+    final nonProto = existingFiles.where((f) => !f.path.endsWith('.proto')).toList();
+    if (nonProto.isNotEmpty) {
+      throw _GrpcServiceException(
+        'Only .proto files are supported. Invalid files: ${nonProto.map((f) => p.basename(f.path)).join(', ')}',
+      );
+    }
+
     final includeDirs = <String>{};
     for (final file in existingFiles) {
-      includeDirs.add(file.parent.path);
+      var cursor = file.parent.absolute;
+      while (true) {
+        includeDirs.add(cursor.path);
+        final parent = cursor.parent;
+        if (parent.path == cursor.path) {
+          break;
+        }
+        cursor = parent;
+      }
     }
+    includeDirs.add(Directory.current.path);
 
     final outFile = File(
       '${Directory.systemTemp.path}${Platform.pathSeparator}apidash_grpc_descriptors_${DateTime.now().microsecondsSinceEpoch}.pb',
@@ -683,13 +778,29 @@ class GrpcService {
       ...existingFiles.map((file) => file.path),
     ];
 
-    final result = await Process.run('protoc', args);
-    if (result.exitCode != 0) {
-      final stderrText = result.stderr?.toString().trim();
-      final stdoutText = result.stdout?.toString().trim();
+    ProcessResult result;
+    try {
+      result = await Process.run('protoc', args);
+    } on ProcessException {
       throw _GrpcServiceException(
-        'protoc failed. Ensure protoc is installed and imports are resolvable. '
-        '${stderrText?.isNotEmpty == true ? stderrText : stdoutText}',
+        'Could not run protoc. Install Protocol Buffers compiler and ensure it is on PATH.',
+      );
+    }
+    if (result.exitCode != 0) {
+      final stderrText = result.stderr?.toString().trim() ?? '';
+      final stdoutText = result.stdout?.toString().trim() ?? '';
+      final compilerOutput = stderrText.isNotEmpty ? stderrText : stdoutText;
+      final selected = existingFiles
+          .map((f) => p.basename(f.path))
+          .join(', ');
+      final includeHint = includeDirs
+          .take(4)
+          .map((d) => p.normalize(d))
+          .join(', ');
+      throw _GrpcServiceException(
+        'protoc failed while compiling: $selected\n'
+        'Checked include roots: $includeHint\n'
+        '${compilerOutput.isEmpty ? 'No compiler output.' : compilerOutput}',
       );
     }
 

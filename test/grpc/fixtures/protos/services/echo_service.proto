@@ -1,0 +1,9 @@
+syntax = "proto3";
+package apidash.test;
+
+import "common/nested/imports.proto";
+import "google/protobuf/descriptor.proto";
+
+service EchoService {
+  rpc Echo(google.protobuf.FileDescriptorSet) returns (google.protobuf.FileDescriptorSet);
+}

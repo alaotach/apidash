@@ -306,17 +306,100 @@ class _EditGrpcRequestPaneState
                                     TextStyle(color: colorScheme.onErrorContainer),
                               ),
                               const SizedBox(height: 8),
-                              OutlinedButton.icon(
-                                onPressed: _uploadProto,
-                                icon: const Icon(Icons.upload_file_rounded),
-                                label: const Text('Upload .proto'),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  OutlinedButton.icon(
+                                    onPressed: _uploadProto,
+                                    icon: const Icon(Icons.upload_file_rounded),
+                                    label: Text(
+                                      _uploadedProtoFiles.isEmpty
+                                          ? 'Upload .proto files'
+                                          : 'Add more .proto files',
+                                    ),
+                                  ),
+                                  if (_uploadedProtoFiles.isNotEmpty)
+                                    OutlinedButton.icon(
+                                      onPressed: () {
+                                        setState(() {
+                                          _uploadedProtoFiles = const [];
+                                        });
+                                        _persistGrpcDraft();
+                                      },
+                                      icon: const Icon(Icons.clear_all_rounded),
+                                      label: const Text('Clear'),
+                                    ),
+                                ],
                               ),
                               if (_uploadedProtoFiles.isNotEmpty)
-                                Text(
-                                  _uploadedProtoFiles.join(', '),
-                                  style: TextStyle(
-                                    color: colorScheme.onErrorContainer,
-                                    fontSize: 12,
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              '${_uploadedProtoFiles.length} proto file(s) selected',
+                                              style: TextStyle(
+                                                color: colorScheme
+                                                    .onErrorContainer,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                          TextButton.icon(
+                                            onPressed: _rerunProtoDiscovery,
+                                            icon: const Icon(
+                                              Icons.refresh_rounded,
+                                              size: 16,
+                                            ),
+                                            label: const Text('Re-run discovery'),
+                                            style: TextButton.styleFrom(
+                                              foregroundColor:
+                                                  colorScheme.onErrorContainer,
+                                              visualDensity: VisualDensity.compact,
+                                              tapTargetSize:
+                                                  MaterialTapTargetSize.shrinkWrap,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Wrap(
+                                        spacing: 6,
+                                        runSpacing: 6,
+                                        children: _uploadedProtoFiles
+                                            .map(
+                                              (path) => InputChip(
+                                                label: Text(
+                                                  getFilenameFromPath(path),
+                                                  style: TextStyle(
+                                                    color: colorScheme
+                                                        .onErrorContainer,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                                onDeleted: () =>
+                                                    _removeUploadedProtoFile(path),
+                                                deleteIconColor:
+                                                    colorScheme.onErrorContainer,
+                                                backgroundColor: colorScheme
+                                                    .errorContainer
+                                                    .withAlpha(80),
+                                                side: BorderSide(
+                                                  color: colorScheme
+                                                      .onErrorContainer
+                                                      .withAlpha(60),
+                                                ),
+                                              ),
+                                            )
+                                            .toList(growable: false),
+                                      ),
+                                    ],
                                   ),
                                 ),
                             ],
@@ -924,11 +1007,15 @@ class _EditGrpcRequestPaneState
   }
 
   Future<void> _uploadProto() async {
-    final file = await pickFile();
-    if (file == null) return;
+    final files = await pickFiles(extensions: const ['proto']);
+    if (files.isEmpty) return;
     if (!mounted) return;
+    final merged = <String>{..._uploadedProtoFiles};
+    for (final file in files) {
+      merged.add(file.path);
+    }
     setState(() {
-      _uploadedProtoFiles = [file.path];
+      _uploadedProtoFiles = merged.toList(growable: false);
     });
     _persistGrpcDraft();
 
@@ -956,6 +1043,49 @@ class _EditGrpcRequestPaneState
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  Future<void> _rerunProtoDiscovery() async {
+    if (_uploadedProtoFiles.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Upload .proto files first.')),
+      );
+      return;
+    }
+
+    final notifier = ref.read(grpcNotifierProvider.notifier);
+    final model = GrpcRequestModel(
+      host: _hostCtrl.text.trim(),
+      port: int.tryParse(_portCtrl.text) ?? 443,
+      useTls: _useTls,
+      serviceName: _serviceCtrl.text.trim(),
+      methodName: _methodCtrl.text.trim(),
+      requestJson: _bodyCtrl.text,
+      metadata: _metadata,
+      callType: _callType,
+      protoFiles: _uploadedProtoFiles,
+    );
+
+    await notifier.discoverFromProtoFiles(model);
+    if (!mounted) return;
+    final session = ref.read(grpcNotifierProvider);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          session.discoveryMessage ?? 'Re-ran proto discovery.',
+        ),
+      ),
+    );
+  }
+
+  void _removeUploadedProtoFile(String path) {
+    setState(() {
+      _uploadedProtoFiles = _uploadedProtoFiles
+          .where((element) => element != path)
+          .toList(growable: false);
+    });
+    _persistGrpcDraft();
   }
 
   Future<void> _disconnect(GrpcNotifier notifier) async {
@@ -1202,34 +1332,34 @@ class _EditGrpcRequestPaneState
 
     _schemaFormValues
       ..clear()
-      ..addAll(parsedBody);
-  }
-
-  void _maybePopulateMockJsonForSchema(List<GrpcRequestFieldSchema> schema) {
-    if (schema.isEmpty || _hasSavedJsonForCurrentMethod()) {
-      return;
-    }
-    final mock = <String, dynamic>{
-      for (final field in schema)
-        field.jsonName: _mockValueForField(field),
-    };
-    _bodyCtrl.text = const JsonEncoder.withIndent('  ').convert(mock);
-    _initializeSchemaFormValues(schema);
-    _persistGrpcDraft();
-  }
-
-  bool _hasSavedJsonForCurrentMethod() {
-    final raw = _bodyCtrl.text.trim();
-    if (raw.isEmpty || raw == _kDefaultGrpcBody) {
-      return false;
-    }
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        return decoded.isNotEmpty;
-      }
-      // Non-map JSON (string/list/number) is still user-provided content.
-      return true;
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: _uploadedProtoFiles
+                                      .map(
+                                        (path) => InputChip(
+                                            label: Text(
+                                              getFilenameFromPath(path),
+                                              style: TextStyle(
+                                                color: colorScheme
+                                                    .onErrorContainer,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                            onDeleted: () =>
+                                                _removeUploadedProtoFile(path),
+                                            deleteIconColor:
+                                                colorScheme.onErrorContainer,
+                                            backgroundColor: colorScheme
+                                                .errorContainer
+                                                .withAlpha(80),
+                                            side: BorderSide(
+                                              color: colorScheme
+                                                  .onErrorContainer
+                                                  .withAlpha(60),
+                                            ),
+                                          ),
+                                        )
+                                        .toList(growable: false),
     } catch (_) {
       // If JSON is invalid but non-empty, keep user input untouched.
       return true;
@@ -2433,12 +2563,31 @@ class _GrpcTimelineView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final rows = <(String, int)>[
-      ('DNS', timeline['dns'] ?? 0),
-      ('Connect', timeline['connect'] ?? 0),
-      ('TLS', timeline['tls'] ?? 0),
-      ('Invoke', timeline['invoke'] ?? 0),
+    final preferredOrder = <String>[
+      'dns',
+      'connect',
+      'tls',
+      'encode',
+      'invoke',
+      'decode',
+      'total',
     ];
+
+    final rows = timeline.entries.toList(growable: false)
+      ..sort((a, b) {
+        final ai = preferredOrder.indexOf(a.key);
+        final bi = preferredOrder.indexOf(b.key);
+        if (ai == -1 && bi == -1) {
+          return a.key.compareTo(b.key);
+        }
+        if (ai == -1) {
+          return 1;
+        }
+        if (bi == -1) {
+          return -1;
+        }
+        return ai.compareTo(bi);
+      });
 
     return Container(
       width: double.infinity,
@@ -2456,7 +2605,7 @@ class _GrpcTimelineView extends StatelessWidget {
             (row) => Padding(
               padding: const EdgeInsets.only(bottom: 4),
               child: Text(
-                '${row.$1}: ${row.$2} ms',
+                '${_timelineLabel(row.key)}: ${row.value} ms',
                 style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
               ),
             ),
@@ -2464,6 +2613,14 @@ class _GrpcTimelineView extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  String _timelineLabel(String key) {
+    return switch (key) {
+      'dns' => 'DNS',
+      'tls' => 'TLS',
+      _ => '${key[0].toUpperCase()}${key.substring(1)}',
+    };
   }
 }
 

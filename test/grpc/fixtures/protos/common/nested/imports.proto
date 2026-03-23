@@ -1,0 +1,8 @@
+syntax = "proto3";
+package apidash.test.common;
+
+import "google/protobuf/descriptor.proto";
+
+message Placeholder {
+  google.protobuf.FileDescriptorSet payload = 1;
+}

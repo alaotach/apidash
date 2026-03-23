@@ -75,6 +75,19 @@ Future<XFile?> pickFile() async {
   return pickedResult;
 }
 
+Future<List<XFile>> pickFiles({List<String>? extensions}) async {
+  final groups = (extensions == null || extensions.isEmpty)
+      ? null
+      : <XTypeGroup>[
+          XTypeGroup(
+            label: 'Allowed files',
+            extensions: extensions,
+          ),
+        ];
+  final picked = await openFiles(acceptedTypeGroups: groups);
+  return picked;
+}
+
 Future<File?> loadFileFromPath(String filePath) async {
   try {
     final file = File(filePath);
