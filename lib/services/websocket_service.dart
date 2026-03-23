@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:better_networking/better_networking.dart';
 
@@ -27,13 +29,16 @@ class WebSocketService {
     _subscription = _channel!.stream.listen(
       (data) {
         final isText = data is String;
-        final payload = isText ? data as String : '[binary data]';
+        final payload = isText ? data as String : base64Encode((data as List).cast<int>());
+        final sizeBytes = isText
+            ? (data as String).length
+            : Uint8List.fromList((data as List).cast<int>()).length;
         controller.add(WebSocketMessage(
           payload: payload,
           isSent: false,
           timestamp: DateTime.now(),
           type: isText ? 'text' : 'binary',
-          sizeBytes: isText ? (data as String).length : null,
+          sizeBytes: sizeBytes,
         ));
       },
       onDone: controller.close,
@@ -47,6 +52,12 @@ class WebSocketService {
   void sendMessage(String payload) {
     if (_channel == null) throw StateError('Not connected');
     _channel!.sink.add(payload);
+  }
+
+  /// Sends [bytes] as a binary frame on the active channel.
+  void sendBinaryMessage(Uint8List bytes) {
+    if (_channel == null) throw StateError('Not connected');
+    _channel!.sink.add(bytes);
   }
 
   /// Closes the WebSocket connection gracefully.
