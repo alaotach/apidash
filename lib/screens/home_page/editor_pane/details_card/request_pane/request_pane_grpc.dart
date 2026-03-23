@@ -47,12 +47,20 @@ class _EditGrpcRequestPaneState
   GrpcBytesDisplayMode _bytesDisplayMode = GrpcBytesDisplayMode.utf8;
   GrpcRequestInputMode _requestInputMode = GrpcRequestInputMode.form;
   bool _useTls = true;
-  bool _showMetadataEditor = false;
+  bool _showMethodSchema = false;
   List<String> _uploadedProtoFiles = const [];
   final Map<String, dynamic> _schemaFormValues = {};
   String _lastSchemaKey = '';
   final Map<String, String> _metadata = {};
   final Map<String, String> _methodBodies = {};
+  bool _isExplorerCollapsed = false;
+  bool _isResponseCollapsed = false;
+  bool _showMetadataEditor = false;
+  bool _showValidationErrors = false;
+  double? _explorerWidth;
+  double? _responseWidth;
+  bool _explorerDividerHovered = false;
+  bool _responseDividerHovered = false;
 
   @override
   void initState() {
@@ -82,16 +90,22 @@ class _EditGrpcRequestPaneState
       session.discoveredServices.isNotEmpty;
     final totalWidth = MediaQuery.sizeOf(context).width;
     final explorerWidth = (totalWidth >= 1400
-      ? 320.0
+      ? 240.0
       : totalWidth >= 1100
-        ? 280.0
-        : 220.0)
-      .clamp(200.0, 320.0);
+        ? 200.0
+        : 160.0)
+      .clamp(140.0, 240.0);
+    final responseDefaultWidth = (totalWidth * 0.26).clamp(220.0, 420.0);
+    final validation = _validateRequest(session);
+    final visibleFieldErrors =
+        _showValidationErrors ? validation.fieldErrors : const <String, String>{};
+    final visibleJsonError = _showValidationErrors ? validation.jsonError : null;
     final canInvoke = session.connectionState == GrpcConnectionState.connected &&
       !session.isLoading &&
       session.discoveryStatus != GrpcDiscoveryStatus.requiresProtoUpload &&
       _serviceCtrl.text.trim().isNotEmpty &&
       _methodCtrl.text.trim().isNotEmpty;
+    final invokeDisabledReason = _invokeDisabledReason(session);
     final schemaKey = session.requestSchema
         .map((f) => '${f.jsonName}:${f.kind.name}:${f.isRepeated}')
         .join('|');
@@ -147,15 +161,33 @@ class _EditGrpcRequestPaneState
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SizedBox(
-                width: explorerWidth,
+              if (!_isExplorerCollapsed)
+                SizedBox(
+                width: _explorerWidth ?? explorerWidth,
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Service Explorer',
-                          style: Theme.of(context).textTheme.titleSmall),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Service Explorer',
+                              style: Theme.of(context).textTheme.titleSmall),
+                          IconButton(
+                            icon: const Icon(Icons.chevron_left_rounded, size: 20),
+                            tooltip: 'Collapse explorer',
+                            constraints:
+                                const BoxConstraints(minWidth: 28, minHeight: 28),
+                            padding: EdgeInsets.zero,
+                            onPressed: () {
+                              setState(() {
+                                _isExplorerCollapsed = true;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 8),
                       if (!hasReflectionDiscovery) ...[
                         TextField(
@@ -204,11 +236,13 @@ class _EditGrpcRequestPaneState
                             _maybeLoadSchema(notifier);
                           },
                           decoration: const InputDecoration(
-                            labelText: 'Service name',
-                            hintText: 'helloworld.Greeter',
+                            labelText: 'Service',
                             border: OutlineInputBorder(),
-                            contentPadding:
-                                EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 8,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -219,11 +253,13 @@ class _EditGrpcRequestPaneState
                             _maybeLoadSchema(notifier);
                           },
                           decoration: const InputDecoration(
-                            labelText: 'Method name',
-                            hintText: 'SayHello',
+                            labelText: 'Method',
                             border: OutlineInputBorder(),
-                            contentPadding:
-                                EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 8,
+                            ),
                           ),
                         ),
                       ] else ...[
@@ -235,6 +271,7 @@ class _EditGrpcRequestPaneState
                             setState(() {
                               _serviceCtrl.text = service;
                               _methodCtrl.text = method;
+                              _showValidationErrors = false;
                               _restoreBodyForCurrentMethod();
                               _initializeSchemaFormValues(session.requestSchema);
                               _persistGrpcDraft();
@@ -289,185 +326,396 @@ class _EditGrpcRequestPaneState
                     ],
                   ),
                 ),
-              ),
-              const VerticalDivider(width: 1),
+              )
+              else
+                SizedBox(
+                  width: 40,
+                  child: Center(
+                    child: IconButton(
+                      icon: const Icon(Icons.chevron_right_rounded, size: 20),
+                      tooltip: 'Expand explorer',
+                      constraints:
+                          const BoxConstraints(minWidth: 28, minHeight: 28),
+                      padding: EdgeInsets.zero,
+                      onPressed: () {
+                        setState(() {
+                          _isExplorerCollapsed = false;
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              if (!_isExplorerCollapsed)
+                MouseRegion(
+                  cursor: SystemMouseCursors.resizeColumn,
+                  onEnter: (_) => setState(() => _explorerDividerHovered = true),
+                  onExit: (_) => setState(() => _explorerDividerHovered = false),
+                  child: GestureDetector(
+                    onHorizontalDragUpdate: (details) {
+                      setState(() {
+                        final current = _explorerWidth ?? explorerWidth;
+                        _explorerWidth =
+                          (current + details.delta.dx).clamp(120.0, 280.0);
+                      });
+                    },
+                    child: Container(
+                      width: 8,
+                      color: _explorerDividerHovered
+                          ? Theme.of(context).colorScheme.primary.withAlpha(100)
+                          : Colors.transparent,
+                      child: Center(
+                        child: VerticalDivider(
+                          width: 1,
+                          color: _explorerDividerHovered
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               Expanded(
                 flex: 5,
                 child: Padding(
                   padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Request Builder',
-                          style: Theme.of(context).textTheme.titleSmall),
-                      const SizedBox(height: 6),
-                      if (session.methodSignature != null)
-                        Text(
-                          session.methodSignature!.toFormattedString(),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelMedium,
-                        ),
-                      const SizedBox(height: 6),
-                      if (session.requestSchema.isNotEmpty)
-                        SegmentedButton<GrpcRequestInputMode>(
-                          showSelectedIcon: false,
-                          segments: GrpcRequestInputMode.values
-                              .map(
-                                (mode) => ButtonSegment<GrpcRequestInputMode>(
-                                  value: mode,
-                                  label: Text(mode.label),
-                                ),
-                              )
-                              .toList(),
-                          selected: {_requestInputMode},
-                          onSelectionChanged: (selection) {
-                            final next = selection.first;
-                            setState(() {
-                              _requestInputMode = next;
-                              if (next == GrpcRequestInputMode.form) {
-                                _initializeSchemaFormValues(session.requestSchema);
-                              } else {
-                                _maybePopulateMockJsonForSchema(session.requestSchema);
-                              }
-                            });
-                          },
-                        ),
-                      const SizedBox(height: 8),
-                      if (_serviceCtrl.text.trim().isEmpty ||
-                          _methodCtrl.text.trim().isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            'Select a method from Service Explorer to build the request.',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ),
-                      Expanded(
-                        child: session.isSchemaLoading
-                            ? const Center(child: CircularProgressIndicator())
-                            : session.requestSchema.isNotEmpty &&
-                                    _requestInputMode == GrpcRequestInputMode.form
-                                ? _GrpcSchemaForm(
-                                    schema: session.requestSchema,
-                                    values: _schemaFormValues,
-                                    onChanged: _updateSchemaField,
-                                  )
-                                : TextField(
-                                    controller: _bodyCtrl,
-                                    onChanged: (_) => _persistGrpcDraft(),
-                                    maxLines: null,
-                                    expands: true,
-                                    style: const TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontSize: 13,
-                                    ),
-                                    decoration: const InputDecoration(
-                                      border: OutlineInputBorder(),
-                                      contentPadding: EdgeInsets.all(12),
-                                      hintText: '{\n  "name": "world"\n}',
-                                      alignLabelWithHint: true,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final formHeight =
+                          (constraints.maxHeight * 0.62).clamp(320.0, 620.0);
+
+                      return SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Request Builder',
+                                style: Theme.of(context).textTheme.titleSmall),
+                            const SizedBox(height: 4),
+                            if (session.methodSignature != null)
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      session.methodSignature!.methodName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context).textTheme.labelLarge,
                                     ),
                                   ),
-                      ),
-                      const SizedBox(height: 8),
-                      InkWell(
-                        onTap: () {
-                          setState(() {
-                            _showMetadataEditor = !_showMetadataEditor;
-                          });
-                        },
-                        borderRadius: BorderRadius.circular(6),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _showMetadataEditor
-                                    ? Icons.expand_less
-                                    : Icons.expand_more,
-                                size: 18,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _metadata.isEmpty
-                                    ? 'Metadata (optional)'
-                                    : 'Metadata (${_metadata.length})',
-                                style: Theme.of(context).textTheme.labelMedium,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      if (_showMetadataEditor)
-                        _GrpcMetadataEditor(
-                          metadata: _metadata,
-                          onChanged: (updated) {
-                            setState(() {
-                              _metadata
-                                ..clear()
-                                ..addAll(updated);
-                              _persistGrpcDraft();
-                            });
-                          },
-                        ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          SizedBox(
-                            width: 170,
-                            child: DropdownButtonFormField<GrpcCallType>(
-                              isExpanded: true,
-                              value: _callType,
-                              decoration: const InputDecoration(
-                                border: OutlineInputBorder(),
-                                contentPadding: EdgeInsets.symmetric(
-                                    horizontal: 10, vertical: 10),
-                              ),
-                              items: GrpcCallType.values
-                                  .map(
-                                    (t) => DropdownMenuItem(
-                                      value: t,
-                                      child: Text(t.label),
+                                  TextButton.icon(
+                                    onPressed: () {
+                                      setState(() {
+                                        _showMethodSchema = !_showMethodSchema;
+                                      });
+                                    },
+                                    icon: Icon(
+                                      _showMethodSchema
+                                          ? Icons.keyboard_arrow_up_rounded
+                                          : Icons.keyboard_arrow_down_rounded,
+                                      size: 16,
                                     ),
-                                  )
-                                  .toList(),
-                              onChanged: (v) => setState(() {
-                                _callType = v ?? GrpcCallType.unary;
-                                _persistGrpcDraft();
-                              }),
+                                    label: Text(
+                                      _showMethodSchema
+                                          ? 'Hide Schema'
+                                          : 'Show Schema',
+                                    ),
+                                    style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2,
+                                      ),
+                                      tapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            if (session.methodSignature != null && _showMethodSchema)
+                              _GrpcMethodSignatureSummary(
+                                signature: session.methodSignature!,
+                              ),
+                            const SizedBox(height: 10),
+                            Text(
+                              'Request Payload',
+                              style: Theme.of(context).textTheme.labelLarge,
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: FilledButton.icon(
-                              onPressed: canInvoke ? () => _invoke(notifier) : null,
-                              icon: session.isLoading
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
+                            const SizedBox(height: 6),
+                            if (session.requestSchema.isNotEmpty)
+                              SegmentedButton<GrpcRequestInputMode>(
+                                showSelectedIcon: false,
+                                style: const ButtonStyle(
+                                  visualDensity: VisualDensity.compact,
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                segments: GrpcRequestInputMode.values
+                                    .map(
+                                      (mode) => ButtonSegment<GrpcRequestInputMode>(
+                                        value: mode,
+                                        label: Text(mode.label),
+                                      ),
                                     )
-                                  : const Icon(Icons.play_arrow_rounded),
-                              label: const Text('Invoke'),
+                                    .toList(),
+                                selected: {_requestInputMode},
+                                onSelectionChanged: (selection) {
+                                  final next = selection.first;
+                                  setState(() {
+                                    _requestInputMode = next;
+                                    _showValidationErrors = false;
+                                    if (next == GrpcRequestInputMode.form) {
+                                      _initializeSchemaFormValues(session.requestSchema);
+                                    } else {
+                                      _maybePopulateMockJsonForSchema(session.requestSchema);
+                                    }
+                                  });
+                                },
+                              ),
+                            const SizedBox(height: 8),
+                            if (_serviceCtrl.text.trim().isEmpty ||
+                                _methodCtrl.text.trim().isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Text(
+                                  'Select a method from Service Explorer to build the request.',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                            SizedBox(
+                              height: formHeight,
+                              child: session.isSchemaLoading
+                                  ? const Center(child: CircularProgressIndicator())
+                                  : session.requestSchema.isNotEmpty &&
+                                          _requestInputMode == GrpcRequestInputMode.form
+                                      ? _GrpcSchemaForm(
+                                          schema: session.requestSchema,
+                                          values: _schemaFormValues,
+                                          fieldErrors: visibleFieldErrors,
+                                          onChanged: _updateSchemaField,
+                                        )
+                                      : TextField(
+                                          controller: _bodyCtrl,
+                                          onChanged: (_) => _persistGrpcDraft(),
+                                          maxLines: null,
+                                          expands: true,
+                                          style: const TextStyle(
+                                            fontFamily: 'monospace',
+                                            fontSize: 13,
+                                          ),
+                                          decoration: InputDecoration(
+                                            border: OutlineInputBorder(),
+                                            contentPadding: const EdgeInsets.all(12),
+                                            hintText: '{\n  "name": "world"\n}',
+                                            errorText: visibleJsonError,
+                                            alignLabelWithHint: true,
+                                          ),
+                                        ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
+                            const SizedBox(height: 14),
+                            if (!_showMetadataEditor)
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: OutlinedButton.icon(
+                                  onPressed: () {
+                                    setState(() => _showMetadataEditor = true);
+                                  },
+                                  icon: const Icon(Icons.add, size: 16),
+                                  label: Text(
+                                    _metadata.isEmpty
+                                        ? 'Metadata'
+                                        : 'Metadata (${_metadata.length})',
+                                  ),
+                                  style: OutlinedButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                ),
+                              )
+                            else
+                              Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: colorScheme.outlineVariant),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: TextButton.icon(
+                                        onPressed: () {
+                                          setState(() => _showMetadataEditor = false);
+                                        },
+                                        icon: const Icon(Icons.expand_less, size: 16),
+                                        label: const Text('Hide Metadata'),
+                                        style: TextButton.styleFrom(
+                                          visualDensity: VisualDensity.compact,
+                                          tapTargetSize:
+                                              MaterialTapTargetSize.shrinkWrap,
+                                        ),
+                                      ),
+                                    ),
+                                    _GrpcMetadataEditor(
+                                      metadata: _metadata,
+                                      onChanged: (updated) {
+                                        setState(() {
+                                          _metadata
+                                            ..clear()
+                                            ..addAll(updated);
+                                          _persistGrpcDraft();
+                                        });
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            const SizedBox(height: 12),
+                            LayoutBuilder(
+                              builder: (context, constraints) {
+                                final isNarrow = constraints.maxWidth < 340;
+
+                                final callTypeField = DropdownButtonFormField<GrpcCallType>(
+                                  isExpanded: true,
+                                  value: _callType,
+                                  decoration: const InputDecoration(
+                                    border: OutlineInputBorder(),
+                                    contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 10),
+                                  ),
+                                  items: GrpcCallType.values
+                                      .map(
+                                        (t) => DropdownMenuItem(
+                                          value: t,
+                                          child: Text(t.label),
+                                        ),
+                                      )
+                                      .toList(),
+                                  onChanged: (v) => setState(() {
+                                    _callType = v ?? GrpcCallType.unary;
+                                    _persistGrpcDraft();
+                                  }),
+                                );
+
+                                final invokeButton = Tooltip(
+                                  message: invokeDisabledReason,
+                                  child: FilledButton.icon(
+                                    onPressed: canInvoke
+                                        ? () async {
+                                            if (!validation.isValid) {
+                                              setState(() {
+                                                _showValidationErrors = true;
+                                              });
+                                              if (!mounted) return;
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    validation.message ??
+                                                        'Please fill required fields.',
+                                                  ),
+                                                ),
+                                              );
+                                              return;
+                                            }
+                                            setState(() {
+                                              _showValidationErrors = false;
+                                            });
+                                            await _invoke(notifier);
+                                          }
+                                        : null,
+                                    icon: session.isLoading
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child:
+                                                CircularProgressIndicator(strokeWidth: 2),
+                                          )
+                                        : const Icon(Icons.play_arrow_rounded),
+                                    label: const Text('Invoke'),
+                                  ),
+                                );
+
+                                if (isNarrow) {
+                                  return Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      callTypeField,
+                                      const SizedBox(height: 8),
+                                      invokeButton,
+                                    ],
+                                  );
+                                }
+
+                                return Row(
+                                  children: [
+                                    SizedBox(width: 170, child: callTypeField),
+                                    const SizedBox(width: 8),
+                                    Expanded(child: invokeButton),
+                                  ],
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
-              const VerticalDivider(width: 1),
-              Expanded(
-                flex: 4,
+              if (!_isResponseCollapsed)
+                MouseRegion(
+                    cursor: SystemMouseCursors.resizeColumn,
+                    onEnter: (_) => setState(() => _responseDividerHovered = true),
+                    onExit: (_) => setState(() => _responseDividerHovered = false),
+                    child: GestureDetector(
+                      onHorizontalDragUpdate: (details) {
+                        setState(() {
+                          final current = _responseWidth ?? 350.0;
+                          _responseWidth = (current - details.delta.dx).clamp(150.0, 600.0);
+                        });
+                      },
+                      child: Container(
+                        width: 8,
+                        color: _responseDividerHovered
+                            ? Theme.of(context).colorScheme.primary.withAlpha(100)
+                            : Colors.transparent,
+                        child: Center(
+                          child: VerticalDivider(
+                            width: 1,
+                            color: _responseDividerHovered
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              if (!_isResponseCollapsed)
+                SizedBox(
+                width: _responseWidth ?? responseDefaultWidth,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                      child: Text('Response',
-                          style: Theme.of(context).textTheme.titleSmall),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Response',
+                              style: Theme.of(context).textTheme.titleSmall),
+                          IconButton(
+                            icon: const Icon(Icons.chevron_right_rounded, size: 20),
+                            tooltip: 'Collapse response',
+                            constraints:
+                                const BoxConstraints(minWidth: 28, minHeight: 28),
+                            padding: EdgeInsets.zero,
+                            onPressed: () {
+                              setState(() {
+                                _isResponseCollapsed = true;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Expanded(
@@ -481,12 +729,183 @@ class _EditGrpcRequestPaneState
                     ),
                   ],
                 ),
-              ),
+              )
+              else
+                SizedBox(
+                  width: 40,
+                  child: Center(
+                    child: IconButton(
+                      icon: const Icon(Icons.chevron_left_rounded, size: 20),
+                      tooltip: 'Expand response',
+                      constraints:
+                          const BoxConstraints(minWidth: 28, minHeight: 28),
+                      padding: EdgeInsets.zero,
+                      onPressed: () {
+                        setState(() {
+                          _isResponseCollapsed = false;
+                        });
+                      },
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
       ],
     );
+  }
+
+  ({
+    bool isValid,
+    String? message,
+    Map<String, String> fieldErrors,
+    String? jsonError,
+  }) _validateRequest(GrpcSessionState session) {
+    if (_serviceCtrl.text.trim().isEmpty || _methodCtrl.text.trim().isEmpty) {
+      return (
+        isValid: false,
+        message: 'Select a method from Service Explorer.',
+        fieldErrors: const <String, String>{},
+        jsonError: null,
+      );
+    }
+
+    if (session.requestSchema.isEmpty) {
+      return (
+        isValid: true,
+        message: null,
+        fieldErrors: const <String, String>{},
+        jsonError: null,
+      );
+    }
+
+    final errors = <String, String>{};
+
+    if (_requestInputMode == GrpcRequestInputMode.form) {
+      for (final field in session.requestSchema) {
+        final value = _schemaFormValues[field.jsonName];
+        switch (field.kind) {
+          case GrpcFieldKind.boolType:
+            break;
+          case GrpcFieldKind.enumType:
+            if (value == null || (value is String && value.trim().isEmpty)) {
+              errors[field.jsonName] = '${field.jsonName} is required';
+            }
+            break;
+          case GrpcFieldKind.intType:
+          case GrpcFieldKind.doubleType:
+            if (value == null) {
+              errors[field.jsonName] = '${field.jsonName} is required';
+            }
+            break;
+          case GrpcFieldKind.message:
+            if (value == null || (value is Map && value.isEmpty)) {
+              errors[field.jsonName] = '${field.jsonName} is required';
+            }
+            break;
+          case GrpcFieldKind.string:
+          case GrpcFieldKind.bytes:
+          case GrpcFieldKind.unknown:
+            if (!field.isRepeated &&
+                (value == null || (value is String && value.trim().isEmpty))) {
+              errors[field.jsonName] = '${field.jsonName} is required';
+            }
+            break;
+        }
+      }
+
+      return (
+        isValid: errors.isEmpty,
+        message: errors.isEmpty ? null : errors.values.first,
+        fieldErrors: errors,
+        jsonError: null,
+      );
+    }
+
+    final raw = _bodyCtrl.text.trim();
+    if (raw.isEmpty) {
+      return (
+        isValid: false,
+        message: 'Request body is required.',
+        fieldErrors: const <String, String>{},
+        jsonError: 'Request body is required',
+      );
+    }
+
+    dynamic parsed;
+    try {
+      parsed = jsonDecode(raw);
+    } catch (_) {
+      return (
+        isValid: false,
+        message: 'Invalid JSON payload.',
+        fieldErrors: const <String, String>{},
+        jsonError: 'Invalid JSON',
+      );
+    }
+
+    if (parsed is! Map<String, dynamic>) {
+      return (
+        isValid: false,
+        message: 'Payload must be a JSON object.',
+        fieldErrors: const <String, String>{},
+        jsonError: 'Payload must be a JSON object',
+      );
+    }
+
+    for (final field in session.requestSchema) {
+      final value = parsed[field.jsonName];
+      switch (field.kind) {
+        case GrpcFieldKind.boolType:
+          break;
+        case GrpcFieldKind.enumType:
+          if (value == null || (value is String && value.trim().isEmpty)) {
+            errors[field.jsonName] = '${field.jsonName} is required';
+          }
+          break;
+        case GrpcFieldKind.intType:
+        case GrpcFieldKind.doubleType:
+          if (value == null) {
+            errors[field.jsonName] = '${field.jsonName} is required';
+          }
+          break;
+        case GrpcFieldKind.message:
+          if (value == null || (value is Map && value.isEmpty)) {
+            errors[field.jsonName] = '${field.jsonName} is required';
+          }
+          break;
+        case GrpcFieldKind.string:
+        case GrpcFieldKind.bytes:
+        case GrpcFieldKind.unknown:
+          if (!field.isRepeated &&
+              (value == null || (value is String && value.trim().isEmpty))) {
+            errors[field.jsonName] = '${field.jsonName} is required';
+          }
+          break;
+      }
+    }
+
+    return (
+      isValid: errors.isEmpty,
+      message: errors.isEmpty ? null : errors.values.first,
+      fieldErrors: errors,
+      jsonError: null,
+    );
+  }
+
+  String _invokeDisabledReason(
+    GrpcSessionState session,
+  ) {
+    if (session.connectionState != GrpcConnectionState.connected) {
+      return 'Connect to the endpoint first.';
+    }
+    if (session.discoveryStatus == GrpcDiscoveryStatus.requiresProtoUpload) {
+      return 'Upload .proto files to continue.';
+    }
+    if (session.isLoading) {
+      return 'Request in progress.';
+    }
+    return 'Invoke request';
   }
 
   Future<void> _discover(GrpcNotifier notifier) async {
@@ -612,6 +1031,8 @@ class _EditGrpcRequestPaneState
         _callType = GrpcCallType.unary;
         _uploadedProtoFiles = const [];
         _metadata.clear();
+        _showMetadataEditor = false;
+        _showValidationErrors = false;
         _methodBodies.clear();
       });
       return;
@@ -663,6 +1084,8 @@ class _EditGrpcRequestPaneState
       if (metadataFromConfig != null) {
         _metadata.addAll(metadataFromConfig.cast<String, String>());
       }
+      _showMetadataEditor = false;
+      _showValidationErrors = false;
       _methodBodies.clear();
       final rawBodies = grpcConfig['methodBodies'];
       if (rawBodies is Map) {
@@ -947,25 +1370,37 @@ class _GrpcMethodExplorerState extends State<_GrpcMethodExplorer> {
                                 serviceIsSelected ? FontWeight.w600 : FontWeight.w400,
                           ),
                         ),
-                        children: methods.map((method) {
-                          final methodIsSelected =
-                              service == widget.selectedService && method == widget.selectedMethod;
-                          return ListTile(
-                            dense: true,
-                            visualDensity: VisualDensity.compact,
-                            contentPadding:
-                                const EdgeInsets.symmetric(horizontal: 20),
-                            minVerticalPadding: 0,
-                            title: Text(
-                              method,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                        children: [
+                          for (var i = 0; i < methods.length; i++)
+                            Builder(
+                              builder: (context) {
+                                final method = methods[i];
+                                final methodIsSelected =
+                                    service == widget.selectedService &&
+                                        method == widget.selectedMethod;
+                                final branch = i == methods.length - 1 ? '└──' : '├──';
+                                return ListTile(
+                                  dense: true,
+                                  visualDensity: VisualDensity.compact,
+                                  contentPadding:
+                                      const EdgeInsets.symmetric(horizontal: 20),
+                                  minVerticalPadding: 0,
+                                  title: Text(
+                                    '$branch $method',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  selected: methodIsSelected,
+                                  selectedTileColor: colorScheme.secondaryContainer,
+                                  onTap: () => widget.onSelect(service, method),
+                                );
+                              },
                             ),
-                            selected: methodIsSelected,
-                            selectedTileColor: colorScheme.secondaryContainer,
-                            onTap: () => widget.onSelect(service, method),
-                          );
-                        }).toList(),
+                        ],
                       );
                     },
                   ),
@@ -979,55 +1414,238 @@ class _GrpcMethodExplorerState extends State<_GrpcMethodExplorer> {
   }
 }
 
+class _GrpcMethodSignatureSummary extends StatelessWidget {
+  const _GrpcMethodSignatureSummary({required this.signature});
+
+  final GrpcMethodSignature signature;
+
+  String _typeFor(GrpcRequestFieldSchema field) {
+    final base = switch (field.kind) {
+      GrpcFieldKind.string => 'string',
+      GrpcFieldKind.bytes => 'bytes',
+      GrpcFieldKind.boolType => 'bool',
+      GrpcFieldKind.intType => 'int32',
+      GrpcFieldKind.doubleType => 'double',
+      GrpcFieldKind.enumType => 'enum',
+      GrpcFieldKind.message => 'object',
+      GrpcFieldKind.unknown => 'unknown',
+    };
+    return field.isRepeated ? '$base[]' : base;
+  }
+
+  Widget _section(
+    BuildContext context,
+    String title,
+    List<GrpcRequestFieldSchema> fields,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 4),
+        if (fields.isEmpty)
+          Text('- none', style: Theme.of(context).textTheme.bodySmall)
+        else
+          ...fields.take(3).map(
+                (field) => Text(
+                  '- ${field.jsonName} (${_typeFor(field)})',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+        if (fields.length > 3)
+          Text(
+            '- ... ${fields.length - 3} more fields',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            signature.methodName,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 8),
+          _section(context, 'Request', signature.requestFields),
+          const SizedBox(height: 8),
+          _section(context, 'Response', signature.responseFields),
+        ],
+      ),
+    );
+  }
+}
+
 class _GrpcSchemaForm extends StatelessWidget {
   const _GrpcSchemaForm({
     required this.schema,
     required this.values,
+    required this.fieldErrors,
     required this.onChanged,
   });
 
   final List<GrpcRequestFieldSchema> schema;
   final Map<String, dynamic> values;
+  final Map<String, String> fieldErrors;
   final void Function(GrpcRequestFieldSchema field, dynamic value) onChanged;
 
-  @override
-  Widget build(BuildContext context) {
-    return ListView.separated(
-      itemCount: schema.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) {
-        final field = schema[index];
-        final label = field.isRepeated
-            ? '${field.jsonName} (repeated)'
-            : field.jsonName;
-        final currentValue = values[field.jsonName];
+  String _fieldTypeLabel(GrpcRequestFieldSchema field) {
+    final base = switch (field.kind) {
+      GrpcFieldKind.string => 'string',
+      GrpcFieldKind.bytes => 'bytes',
+      GrpcFieldKind.boolType => 'bool',
+      GrpcFieldKind.intType => 'int32',
+      GrpcFieldKind.doubleType => 'double',
+      GrpcFieldKind.enumType => 'enum',
+      GrpcFieldKind.message => 'object',
+      GrpcFieldKind.unknown => 'unknown',
+    };
+    return field.isRepeated ? '$base[]' : base;
+  }
 
-        switch (field.kind) {
-          case GrpcFieldKind.boolType:
-            return SwitchListTile(
-              value: currentValue == true,
-              onChanged: (v) => onChanged(field, v),
-              title: Text(label),
-              contentPadding: EdgeInsets.zero,
-            );
-          case GrpcFieldKind.enumType:
-            return DropdownButtonFormField<String>(
+  List<GrpcRequestFieldSchema> _fieldsForGroup(String group) {
+    return schema.where((f) {
+      switch (group) {
+        case 'Basic':
+          return f.kind == GrpcFieldKind.string ||
+              f.kind == GrpcFieldKind.boolType ||
+              f.kind == GrpcFieldKind.bytes ||
+              f.kind == GrpcFieldKind.enumType;
+        case 'Numbers':
+          return f.kind == GrpcFieldKind.intType ||
+              f.kind == GrpcFieldKind.doubleType;
+        case 'Nested':
+          return f.kind == GrpcFieldKind.message;
+        case 'Other':
+          return f.kind == GrpcFieldKind.unknown;
+      }
+      return false;
+    }).toList();
+  }
+
+  bool _isFieldRequired(GrpcRequestFieldSchema field) {
+    if (field.kind == GrpcFieldKind.boolType) {
+      return false;
+    }
+    if (field.kind == GrpcFieldKind.string ||
+        field.kind == GrpcFieldKind.bytes ||
+        field.kind == GrpcFieldKind.unknown) {
+      return !field.isRepeated;
+    }
+    return true;
+  }
+
+  Widget _buildField(BuildContext context, GrpcRequestFieldSchema field) {
+    final fieldName = _isFieldRequired(field)
+        ? '${field.jsonName} *'
+        : field.jsonName;
+    final fieldType = _fieldTypeLabel(field);
+    final currentValue = values[field.jsonName];
+    final errorText = fieldErrors[field.jsonName];
+
+    Widget _header() {
+      return Row(
+        children: [
+          Expanded(
+            child: Text(
+              fieldName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            fieldType,
+            style: const TextStyle(fontSize: 11),
+          ),
+        ],
+      );
+    }
+
+    switch (field.kind) {
+      case GrpcFieldKind.boolType:
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: errorText == null
+                  ? Colors.transparent
+                  : Theme.of(context).colorScheme.error,
+            ),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(child: _header()),
+                  const SizedBox(width: 8),
+                  Switch.adaptive(
+                    value: currentValue == true,
+                    onChanged: (v) => onChanged(field, v),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ],
+              ),
+              if (errorText != null)
+                Text(
+                  errorText,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+            ],
+          ),
+        );
+      case GrpcFieldKind.enumType:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _header(),
+            const SizedBox(height: 4),
+            DropdownButtonFormField<String>(
               key: ValueKey('schema-${field.jsonName}'),
               isExpanded: true,
               value: currentValue is String && field.enumValues.contains(currentValue)
                   ? currentValue
                   : null,
               decoration: InputDecoration(
-                labelText: label,
                 border: const OutlineInputBorder(),
+                isDense: true,
+                errorText: errorText,
+                contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               ),
               items: field.enumValues
                   .map((v) => DropdownMenuItem(value: v, child: Text(v)))
                   .toList(),
               onChanged: (v) => onChanged(field, v),
-            );
-          case GrpcFieldKind.message:
-            return TextFormField(
+            ),
+          ],
+        );
+      case GrpcFieldKind.message:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _header(),
+            const SizedBox(height: 4),
+            TextFormField(
               key: ValueKey('schema-${field.jsonName}'),
               initialValue: currentValue is Map
                   ? const JsonEncoder.withIndent('  ').convert(currentValue)
@@ -1035,41 +1653,119 @@ class _GrpcSchemaForm extends StatelessWidget {
               minLines: 3,
               maxLines: 6,
               decoration: InputDecoration(
-                labelText: '$label (JSON object)',
                 border: const OutlineInputBorder(),
+                isDense: true,
+                errorText: errorText,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               ),
               onChanged: (v) => onChanged(field, v),
-            );
-          case GrpcFieldKind.intType:
-          case GrpcFieldKind.doubleType:
-            return TextFormField(
+            ),
+          ],
+        );
+      case GrpcFieldKind.intType:
+      case GrpcFieldKind.doubleType:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _header(),
+            const SizedBox(height: 4),
+            TextFormField(
               key: ValueKey('schema-${field.jsonName}'),
               initialValue: currentValue?.toString() ?? '',
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
-                labelText: label,
                 border: const OutlineInputBorder(),
+                isDense: true,
+                errorText: errorText,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               ),
               onChanged: (v) => onChanged(field, v),
-            );
-          case GrpcFieldKind.string:
-          case GrpcFieldKind.bytes:
-          case GrpcFieldKind.unknown:
-            return TextFormField(
+            ),
+          ],
+        );
+      case GrpcFieldKind.string:
+      case GrpcFieldKind.bytes:
+      case GrpcFieldKind.unknown:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _header(),
+            const SizedBox(height: 4),
+            TextFormField(
               key: ValueKey('schema-${field.jsonName}'),
               initialValue: currentValue is List
                   ? currentValue.join(', ')
                   : (currentValue?.toString() ?? ''),
               decoration: InputDecoration(
-                labelText: label,
                 helperText: field.kind == GrpcFieldKind.bytes
-                    ? 'Bytes: enter text or comma-separated byte values for repeated fields'
+                    ? 'Text or comma-separated byte values'
                     : null,
                 border: const OutlineInputBorder(),
+                isDense: true,
+                errorText: errorText,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               ),
               onChanged: (v) => onChanged(field, v),
-            );
-        }
+            ),
+          ],
+        );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final groups = ['Basic', 'Numbers', 'Nested', 'Other']
+        .map((title) => (title: title, fields: _fieldsForGroup(title)))
+        .where((group) => group.fields.isNotEmpty)
+        .toList();
+
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(0, 8, 0, 8),
+      itemCount: groups.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (context, index) {
+        final group = groups[index];
+        return Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: ExpansionTile(
+            key: ValueKey('grpc-schema-group-${group.title}'),
+            title: Text(group.title,
+                style: Theme.of(context).textTheme.titleSmall),
+            initiallyExpanded: group.title == 'Basic',
+            tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+            childrenPadding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+            dense: true,
+            shape: const Border(),
+            collapsedShape: const Border(),
+            children: [
+              LayoutBuilder(
+                builder: (context, sectionConstraints) {
+                  final maxWidth = sectionConstraints.maxWidth;
+                  final colWidth = ((maxWidth - 8) / 2).clamp(80.0, maxWidth);
+
+                  return Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: group.fields.map((field) {
+                      final fullWidth =
+                          field.kind == GrpcFieldKind.message || field.isRepeated;
+                      return SizedBox(
+                        width: fullWidth ? maxWidth : colWidth,
+                        child: _buildField(context, field),
+                      );
+                    }).toList(growable: false),
+                  );
+                },
+              ),
+            ],
+          ),
+        );
       },
     );
   }
@@ -1133,40 +1829,11 @@ class _GrpcMetadataEditorState extends State<_GrpcMetadataEditor> {
           final entry = _entries[index];
           return Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    initialValue: entry.key,
-                    decoration: const InputDecoration(
-                      labelText: 'Key',
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                    ),
-                    onChanged: (v) {
-                      _entries[index] = MapEntry(v, _entries[index].value);
-                      _emit();
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextFormField(
-                    initialValue: entry.value,
-                    decoration: const InputDecoration(
-                      labelText: 'Value',
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                    ),
-                    onChanged: (v) {
-                      _entries[index] = MapEntry(_entries[index].key, v);
-                      _emit();
-                    },
-                  ),
-                ),
-                IconButton(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 460;
+
+                final removeButton = IconButton(
                   tooltip: 'Remove',
                   icon: const Icon(Icons.remove_circle_outline),
                   onPressed: _entries.length == 1
@@ -1180,8 +1847,58 @@ class _GrpcMetadataEditorState extends State<_GrpcMetadataEditor> {
                           });
                           _emit();
                         },
-                ),
-              ],
+                );
+
+                final keyField = TextFormField(
+                  initialValue: entry.key,
+                  decoration: const InputDecoration(
+                    labelText: 'Key',
+                    border: OutlineInputBorder(),
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  ),
+                  onChanged: (v) {
+                    _entries[index] = MapEntry(v, _entries[index].value);
+                    _emit();
+                  },
+                );
+
+                final valueField = TextFormField(
+                  initialValue: entry.value,
+                  decoration: const InputDecoration(
+                    labelText: 'Value',
+                    border: OutlineInputBorder(),
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  ),
+                  onChanged: (v) {
+                    _entries[index] = MapEntry(_entries[index].key, v);
+                    _emit();
+                  },
+                );
+
+                if (isNarrow) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      keyField,
+                      const SizedBox(height: 8),
+                      valueField,
+                      const SizedBox(height: 4),
+                      Align(alignment: Alignment.centerRight, child: removeButton),
+                    ],
+                  );
+                }
+
+                return Row(
+                  children: [
+                    Expanded(child: keyField),
+                    const SizedBox(width: 8),
+                    Expanded(child: valueField),
+                    removeButton,
+                  ],
+                );
+              },
             ),
           );
         }),
@@ -1204,7 +1921,9 @@ class _GrpcMetadataEditorState extends State<_GrpcMetadataEditor> {
 
 enum _GrpcResponseView {
   body('Body'),
-  debug('Debug');
+  headers('Headers'),
+  trailers('Trailers'),
+  timeline('Timeline');
 
   const _GrpcResponseView(this.label);
   final String label;
@@ -1230,63 +1949,31 @@ class _GrpcResponsePanelState extends State<_GrpcResponsePanel> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     final session = widget.session;
-
-    if (session.status == GrpcCallStatus.idle) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.integration_instructions_rounded,
-                size: 48,
-                color: colorScheme.onSurface.withAlpha(80)),
-            const SizedBox(height: 8),
-            Text('Invoke a method to see the response',
-                style: TextStyle(
-                    color: colorScheme.onSurface.withAlpha(80))),
-          ],
-        ),
-      );
-    }
-
-    if (session.status == GrpcCallStatus.calling) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
     final result = session.result;
-    if (result == null) return const SizedBox();
-    final hasStreamResponses = result.streamResponses.isNotEmpty;
-    final hasBytesFields = _responseHasBytesFields(result.responseJson);
-    final renderedResponse = result.responseJson == null
-      ? null
-      : _prettyJson(result.responseJson!, widget.bytesDisplayMode);
+    final hasResult = result != null;
+    final hasBytesFields = hasResult && _responseHasBytesFields(result.responseJson);
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Status row
-          Row(
-            children: [
-              Text('Response',
-                  style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(width: 12),
-              _StatusBadge(
-                code: result.statusCode ?? '—',
-                isError: result.errorMessage != null,
-              ),
-              if (result.responseDurationMs != null) ...[
-                const SizedBox(width: 8),
-                Text(
-                  '${result.responseDurationMs} ms',
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
-              ],
-              const Spacer(),
-              SizedBox(
-                width: 110,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final isNarrow = constraints.maxWidth < 280;
+              final insightStatus = hasResult
+                  ? 'Status: ${_statusWithCode(result)}'
+                  : 'Status: Waiting for response';
+              final insightLatency = hasResult
+                  ? 'Latency: ${(result.responseDurationMs ?? 0)} ms'
+                  : 'Latency: --';
+              final insightPayload = hasResult
+                  ? 'Payload: ${_payloadSummary(result)}'
+                  : 'Payload: --';
+
+              final bytesModeDropdown = SizedBox(
+                width: isNarrow ? constraints.maxWidth.clamp(120.0, 200.0) : 110,
                 child: DropdownButton<GrpcBytesDisplayMode>(
                   key: ValueKey('grpc-bytes-mode-${widget.bytesDisplayMode.name}'),
                   isExpanded: true,
@@ -1310,17 +1997,81 @@ class _GrpcResponsePanelState extends State<_GrpcResponsePanel> {
                         }
                       : null,
                 ),
-              ),
-            ],
+              );
+
+              if (isNarrow) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('Response',
+                              style: Theme.of(context).textTheme.titleSmall),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(insightStatus, style: Theme.of(context).textTheme.labelSmall),
+                    Text(insightLatency, style: Theme.of(context).textTheme.labelSmall),
+                    Text(insightPayload, style: Theme.of(context).textTheme.labelSmall),
+                    const SizedBox(height: 6),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: bytesModeDropdown,
+                    ),
+                  ],
+                );
+              }
+
+              return Row(
+                children: [
+                  Text('Response', style: Theme.of(context).textTheme.titleSmall),
+                  const Spacer(),
+                  bytesModeDropdown,
+                ],
+              );
+            },
           ),
-          const SizedBox(height: 8),
-          SegmentedButton<_GrpcResponseView>(
+        ),
+        if (hasResult)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 4,
+              children: [
+                Text('Status: ${_statusWithCode(result)}',
+                    style: Theme.of(context).textTheme.labelSmall),
+                Text('Latency: ${(result.responseDurationMs ?? 0)} ms',
+                    style: Theme.of(context).textTheme.labelSmall),
+                Text('Payload: ${_payloadSummary(result)}',
+                    style: Theme.of(context).textTheme.labelSmall),
+              ],
+            ),
+          ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: SegmentedButton<_GrpcResponseView>(
             showSelectedIcon: false,
+            style: const ButtonStyle(
+              visualDensity: VisualDensity.compact,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
             segments: _GrpcResponseView.values
                 .map(
                   (mode) => ButtonSegment<_GrpcResponseView>(
                     value: mode,
-                    label: Text(mode.label),
+                    label: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        mode.label,
+                        maxLines: 1,
+                        softWrap: false,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
                   ),
                 )
                 .toList(),
@@ -1329,114 +2080,174 @@ class _GrpcResponsePanelState extends State<_GrpcResponsePanel> {
               setState(() => _view = selection.first);
             },
           ),
-          const SizedBox(height: 10),
+        ),
+        const SizedBox(height: 10),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: _buildTabContent(context, session, result),
+          ),
+        ),
+      ],
+    );
+  }
 
-          if (result.errorMessage != null)
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: colorScheme.errorContainer,
-                borderRadius: BorderRadius.circular(8),
+  Widget _buildTabContent(
+    BuildContext context,
+    GrpcSessionState session,
+    GrpcRequestModel? result,
+  ) {
+    if (session.status == GrpcCallStatus.calling) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final colorScheme = Theme.of(context).colorScheme;
+
+    if (_view == _GrpcResponseView.body) {
+      if (result == null) {
+        return _emptyPanelMessage(
+          context,
+          'Invoke a method to see the response body.',
+        );
+      }
+      if (result.errorMessage != null) {
+        return Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: colorScheme.errorContainer,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            result.errorMessage!,
+            style: TextStyle(
+              color: colorScheme.onErrorContainer,
+              fontFamily: 'monospace',
+            ),
+          ),
+        );
+      }
+
+      if (result.streamResponses.isNotEmpty) {
+        return Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Stream Responses (${result.streamResponses.length})',
+                style: Theme.of(context).textTheme.labelLarge,
               ),
-              child: Text(result.errorMessage!,
-                  style: TextStyle(
-                      color: colorScheme.onErrorContainer,
-                      fontFamily: 'monospace')),
-            )
-          else if (_view == _GrpcResponseView.body && hasStreamResponses)
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Stream Responses (${result.streamResponses.length})',
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
-                  const SizedBox(height: 8),
-                  ...result.streamResponses.asMap().entries.map(
-                    (entry) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: colorScheme.surfaceContainerLow,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: SelectableText(
-                          '#${entry.key + 1}\n${_prettyJson(entry.value, widget.bytesDisplayMode)}',
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                          ),
-                        ),
+              const SizedBox(height: 8),
+              ...result.streamResponses.asMap().entries.map(
+                (entry) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: SelectableText(
+                      '#${entry.key + 1}\n${_prettyJson(entry.value, widget.bytesDisplayMode)}',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
                       ),
                     ),
                   ),
-                ],
-              ),
-            )
-          else if (_view == _GrpcResponseView.body && result.responseJson != null)
-            // Pretty-print JSON
-            Container(
-              key: ValueKey('grpc-response-${widget.bytesDisplayMode.name}'),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SelectableText(
-                renderedResponse!,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 13,
                 ),
               ),
+            ],
+          ),
+        );
+      }
+
+      if (result.responseJson != null) {
+        final renderedResponse =
+            _prettyJson(result.responseJson!, widget.bytesDisplayMode);
+        return Container(
+          key: ValueKey('grpc-response-${widget.bytesDisplayMode.name}'),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: SelectableText(
+            renderedResponse,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 13,
             ),
+          ),
+        );
+      }
 
-          if (_view == _GrpcResponseView.debug && result.timeline.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _GrpcTimelineView(timeline: result.timeline),
-          ],
+      return _emptyPanelMessage(
+        context,
+        'No response body returned for this call.',
+      );
+    }
 
-          if (_view == _GrpcResponseView.debug && result.headers.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _GrpcMetadataView(
-              title: 'Headers',
-              entries: result.headers,
-            ),
-          ],
+    if (_view == _GrpcResponseView.headers) {
+      if (result == null || result.headers.isEmpty) {
+        return _emptyPanelMessage(context, 'No headers yet.');
+      }
+      return _GrpcMetadataView(title: 'Headers', entries: result.headers);
+    }
 
-          if (_view == _GrpcResponseView.debug && result.trailers.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _GrpcMetadataView(
-              title: 'Trailers',
-              entries: result.trailers,
-            ),
-          ],
+    if (_view == _GrpcResponseView.trailers) {
+      if (result == null || result.trailers.isEmpty) {
+        return _emptyPanelMessage(context, 'No trailers yet.');
+      }
+      return _GrpcMetadataView(title: 'Trailers', entries: result.trailers);
+    }
 
-          if (_view == _GrpcResponseView.debug &&
-              result.timeline.isEmpty &&
-              result.headers.isEmpty &&
-              result.trailers.isEmpty)
-            Text(
-              'No debug metadata available for this response.',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+    if (result == null || result.timeline.isEmpty) {
+      return _emptyPanelMessage(context, 'No timeline data yet.');
+    }
+    return _GrpcTimelineView(timeline: result.timeline);
+  }
 
-          if (result.statusMessage != null) ...[
-            const SizedBox(height: 8),
-            Text(result.statusMessage!,
-                style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ],
-      ),
+  Widget _emptyPanelMessage(BuildContext context, String message) {
+    return Text(
+      message,
+      style: Theme.of(context).textTheme.bodySmall,
     );
+  }
+
+  String _statusWithCode(GrpcRequestModel result) {
+    final status = result.statusCode ?? '—';
+    final code = switch (status.toUpperCase()) {
+      'OK' => 200,
+      'INVALID_ARGUMENT' => 400,
+      'UNAUTHENTICATED' => 401,
+      'PERMISSION_DENIED' => 403,
+      'NOT_FOUND' => 404,
+      'ALREADY_EXISTS' => 409,
+      'UNIMPLEMENTED' => 501,
+      'UNAVAILABLE' => 503,
+      _ => null,
+    };
+    return code == null ? status : '$status ($code)';
+  }
+
+  String _payloadSummary(GrpcRequestModel result) {
+    if (result.errorMessage != null) {
+      return 'Error';
+    }
+    if (result.streamResponses.isNotEmpty) {
+      return '${result.streamResponses.length} stream message(s)';
+    }
+    final body = result.responseJson?.trim();
+    if (body == null || body.isEmpty || body == '{}') {
+      return 'Empty response';
+    }
+    return '${body.length} chars';
   }
 
   String _prettyJson(String raw, GrpcBytesDisplayMode bytesMode) {
@@ -1672,7 +2483,7 @@ class _GrpcConnectButton extends StatelessWidget {
       GrpcConnectionState.disconnected => OutlinedButton.icon(
           onPressed: isBusy ? null : onConnect,
           icon: const Icon(Icons.hub_rounded),
-          label: const Text('Connect & Discover'),
+          label: const Text('Connect'),
         ),
     };
   }
