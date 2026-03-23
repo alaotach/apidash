@@ -65,6 +65,46 @@ class CollectionStateNotifier
   final Ref ref;
   final HiveHandler hiveHandler;
   final baseHttpResponseModel = const HttpResponseModel();
+  final Map<String, Map<APIType, String>> _urlByApiTypeByRequestId = {};
+
+  bool _isUrlScopedApiType(APIType apiType) {
+    return apiType == APIType.rest ||
+        apiType == APIType.graphql ||
+        apiType == APIType.websocket ||
+        apiType == APIType.mqtt ||
+        apiType == APIType.grpc;
+  }
+
+  void _cacheUrlForApiType({
+    required String requestId,
+    required APIType apiType,
+    String? url,
+  }) {
+    if (!_isUrlScopedApiType(apiType)) {
+      return;
+    }
+    final urlMap = _urlByApiTypeByRequestId.putIfAbsent(requestId, () => {});
+    urlMap[apiType] = url ?? '';
+  }
+
+  String _getCachedUrlForApiType({
+    required String requestId,
+    required APIType apiType,
+  }) {
+    return _urlByApiTypeByRequestId[requestId]?[apiType] ?? '';
+  }
+
+  void _seedUrlCacheFromRequestModel(RequestModel requestModel) {
+    final httpRequestModel = requestModel.httpRequestModel;
+    if (httpRequestModel == null || !_isUrlScopedApiType(requestModel.apiType)) {
+      return;
+    }
+    _cacheUrlForApiType(
+      requestId: requestModel.id,
+      apiType: requestModel.apiType,
+      url: httpRequestModel.url,
+    );
+  }
 
   bool hasId(String id) => state?.keys.contains(id) ?? false;
 
@@ -82,6 +122,7 @@ class CollectionStateNotifier
       id: id,
       httpRequestModel: const HttpRequestModel(),
     );
+    _seedUrlCacheFromRequestModel(newRequestModel);
     var map = {...state!};
     map[id] = newRequestModel;
     state = map;
@@ -99,6 +140,7 @@ class CollectionStateNotifier
       name: name ?? "",
       httpRequestModel: httpRequestModel,
     );
+    _seedUrlCacheFromRequestModel(newRequestModel);
     var map = {...state!};
     map[id] = newRequestModel;
     state = map;
@@ -138,6 +180,7 @@ class CollectionStateNotifier
 
     var map = {...state!};
     map.remove(rId);
+    _urlByApiTypeByRequestId.remove(rId);
     state = map;
     unsave();
   }
@@ -182,6 +225,12 @@ class CollectionStateNotifier
     itemIds.insert(idx + 1, newId);
     var map = {...state!};
     map[newId] = newModel;
+    if (_urlByApiTypeByRequestId.containsKey(rId)) {
+      _urlByApiTypeByRequestId[newId] = {
+        ..._urlByApiTypeByRequestId[rId]!,
+      };
+    }
+    _seedUrlCacheFromRequestModel(newModel);
     state = map;
 
     ref.read(requestSequenceProvider.notifier).state = [...itemIds];
@@ -212,6 +261,7 @@ class CollectionStateNotifier
     itemIds.insert(0, newId);
     var map = {...state!};
     map[newId] = newModel;
+    _seedUrlCacheFromRequestModel(newModel);
     state = map;
 
     ref.read(requestSequenceProvider.notifier).state = [...itemIds];
@@ -254,22 +304,42 @@ class CollectionStateNotifier
     RequestModel newModel;
 
     if (apiType != null && currentModel.apiType != apiType) {
+      _cacheUrlForApiType(
+        requestId: rId,
+        apiType: currentModel.apiType,
+        url: currentHttpRequestModel?.url,
+      );
+
+      final targetApiTypeUrl = _getCachedUrlForApiType(
+        requestId: rId,
+        apiType: apiType,
+      );
+
       final defaultModel = ref.read(settingsProvider).defaultAIModel;
       newModel = switch (apiType) {
-        APIType.rest || APIType.graphql => currentModel.copyWith(
-          apiType: apiType,
-          requestTabIndex: 0,
-          name: name ?? currentModel.name,
-          description: description ?? currentModel.description,
-          httpRequestModel: const HttpRequestModel(),
-          aiRequestModel: null,
-        ),
+        APIType.rest ||
+        APIType.graphql ||
+        APIType.websocket ||
+        APIType.mqtt ||
+        APIType.grpc =>
+          currentModel.copyWith(
+            apiType: apiType,
+            requestTabIndex: 0,
+            name: name ?? currentModel.name,
+            description: description ?? currentModel.description,
+            httpRequestModel: (currentHttpRequestModel ??
+                const HttpRequestModel())
+              .copyWith(url: targetApiTypeUrl),
+            aiRequestModel: null,
+          ),
+
         APIType.ai => currentModel.copyWith(
           apiType: apiType,
           requestTabIndex: 0,
           name: name ?? currentModel.name,
           description: description ?? currentModel.description,
-          httpRequestModel: null,
+          httpRequestModel:
+              currentHttpRequestModel ?? const HttpRequestModel(),
           aiRequestModel: defaultModel == null
               ? const AIRequestModel()
               : AIRequestModel.fromJson(defaultModel),
@@ -305,10 +375,19 @@ class CollectionStateNotifier
         postRequestScript: postRequestScript ?? currentModel.postRequestScript,
         aiRequestModel: aiRequestModel ?? currentModel.aiRequestModel,
       );
+
+      if (url != null) {
+        _cacheUrlForApiType(
+          requestId: rId,
+          apiType: newModel.apiType,
+          url: url,
+        );
+      }
     }
 
     var map = {...state!};
     map[rId] = newModel;
+    _seedUrlCacheFromRequestModel(newModel);
     state = map;
     unsave();
   }
@@ -577,6 +656,102 @@ class CollectionStateNotifier
     unsave();
   }
 
+  void logProtocolRequest({
+    required APIType apiType,
+    required String url,
+    required HTTPVerb method,
+    String? requestBody,
+    List<NameValueModel>? requestHeaders,
+    List<NameValueModel>? requestParams,
+    int? responseStatus,
+    String? message,
+    String? responseBody,
+    Duration? duration,
+    Map<String, String>? responseHeaders,
+  }) {
+    final requestId = ref.read(selectedIdStateProvider);
+    if (requestId == null || state == null) {
+      return;
+    }
+
+    final requestModel = state![requestId];
+    if (requestModel == null) {
+      return;
+    }
+
+    final terminal = ref.read(terminalStateProvider.notifier);
+    final logId = terminal.startNetwork(
+      apiType: apiType,
+      method: method,
+      url: url,
+      requestId: requestId,
+      requestHeaders: rowsToMap(requestHeaders) ??
+          requestModel.httpRequestModel?.enabledHeadersMap,
+      requestBodyPreview: requestBody,
+      isStreaming: false,
+    );
+
+    final status = responseStatus ?? -1;
+    if (status >= 0) {
+      terminal.completeNetwork(
+        logId,
+        statusCode: status,
+        responseHeaders: responseHeaders,
+        responseBodyPreview: responseBody,
+        duration: duration,
+      );
+    } else {
+      terminal.failNetwork(logId, message ?? 'Request failed');
+      ref.read(showTerminalBadgeProvider.notifier).state = true;
+    }
+
+    final historyId = getNewUuid();
+    final historyHttpRequestModel =
+        (requestModel.httpRequestModel ?? const HttpRequestModel()).copyWith(
+          method: method,
+          url: url,
+          headers: requestHeaders,
+          params: requestParams,
+          isHeaderEnabledList: requestHeaders == null
+              ? null
+              : List<bool>.filled(requestHeaders.length, true),
+          isParamEnabledList: requestParams == null
+              ? null
+              : List<bool>.filled(requestParams.length, true),
+          body: requestBody,
+        );
+
+    final historyResponseModel = HttpResponseModel(
+      statusCode: status >= 0 ? status : null,
+      body: responseBody,
+      formattedBody: responseBody,
+      headers: responseHeaders,
+      time: duration,
+    );
+
+    final historyModel = HistoryRequestModel(
+      historyId: historyId,
+      metaData: HistoryMetaModel(
+        historyId: historyId,
+        requestId: requestId,
+        apiType: apiType,
+        name: requestModel.name,
+        url: url,
+        method: method,
+        responseStatus: status,
+        timeStamp: DateTime.now(),
+      ),
+      httpRequestModel: historyHttpRequestModel,
+      aiRequestModel: requestModel.aiRequestModel,
+      httpResponseModel: historyResponseModel,
+      preRequestScript: requestModel.preRequestScript,
+      postRequestScript: requestModel.postRequestScript,
+      authModel: historyHttpRequestModel.authModel,
+    );
+
+    ref.read(historyMetaStateNotifier.notifier).addHistoryRequest(historyModel);
+  }
+
   void cancelRequest() {
     final id = ref.read(selectedIdStateProvider);
     cancelHttpRequest(id);
@@ -589,6 +764,7 @@ class CollectionStateNotifier
     await hiveHandler.clear();
     ref.read(clearDataStateProvider.notifier).state = false;
     ref.read(requestSequenceProvider.notifier).state = [];
+    _urlByApiTypeByRequestId.clear();
     state = {};
     unsave();
   }
@@ -603,6 +779,8 @@ class CollectionStateNotifier
           httpRequestModel: const HttpRequestModel(),
         ),
       };
+      _urlByApiTypeByRequestId.clear();
+      _seedUrlCacheFromRequestModel(state![newId]!);
       return true;
     } else {
       Map<String, RequestModel> data = {};
@@ -620,6 +798,10 @@ class CollectionStateNotifier
         }
       }
       state = data;
+      _urlByApiTypeByRequestId.clear();
+      for (final model in data.values) {
+        _seedUrlCacheFromRequestModel(model);
+      }
       return false;
     }
   }

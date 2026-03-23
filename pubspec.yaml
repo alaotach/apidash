@@ -15,6 +15,10 @@ dependencies:
     sdk: flutter
   apidash_core: any
   apidash_design_system: any
+  # Protocol support
+  web_socket_channel: ^3.0.1
+  mqtt_client: ^10.5.2
+  grpc: ^4.0.2
   carousel_slider: ^5.1.2
   code_builder: ^4.11.1
   csv: ^7.2.0

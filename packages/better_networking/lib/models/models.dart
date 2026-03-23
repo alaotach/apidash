@@ -8,3 +8,6 @@ export 'auth/auth_jwt_model.dart';
 export 'auth/auth_digest_model.dart';
 export 'auth/auth_oauth2_model.dart';
 export 'auth/auth_oauth1_model.dart';
+export 'websocket_request_model.dart';
+export 'mqtt_request_model.dart';
+export 'grpc_request_model.dart';

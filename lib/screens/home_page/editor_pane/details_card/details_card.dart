@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:apidash_core/apidash_core.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:apidash/providers/providers.dart';
 import 'package:apidash/widgets/widgets.dart';
@@ -14,6 +15,16 @@ class EditorPaneRequestDetailsCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final codePaneVisible = ref.watch(codePaneVisibleStateProvider);
     final isDashbotPopped = ref.watch(dashbotWindowNotifierProvider).isPopped;
+    final apiType = ref.watch(
+        selectedRequestModelProvider.select((value) => value?.apiType));
+
+    if (apiType == APIType.websocket ||
+        apiType == APIType.mqtt ||
+        apiType == APIType.grpc) {
+      return const RequestDetailsCard(
+        child: EditRequestPane(),
+      );
+    }
     return RequestDetailsCard(
       child: EqualSplitView(
         leftWidget: const EditRequestPane(),

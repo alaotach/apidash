@@ -39,6 +39,7 @@ class _RequestPaneState extends State<RequestPane>
     final TabController controller = useTabController(
       initialLength: widget.children.length,
       vsync: this,
+      keys: [widget.children.length, widget.tabLabels.length],
     );
     if (widget.tabIndex != null) {
       controller.index = widget.tabIndex!;

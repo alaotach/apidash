@@ -32,7 +32,11 @@ Color getAPIColor(
   Brightness? brightness,
 }) {
   Color col = switch (apiType) {
-    APIType.rest => getHTTPMethodColor(
+    APIType.rest ||
+    APIType.websocket ||
+    APIType.mqtt ||
+    APIType.grpc =>
+      getHTTPMethodColor(
         method,
       ),
     APIType.graphql => kColorGQL,

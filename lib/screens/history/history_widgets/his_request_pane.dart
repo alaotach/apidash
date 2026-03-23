@@ -166,6 +166,65 @@ class HistoryRequestPane extends ConsumerWidget {
           const HisAIRequestConfigSection(),
         ],
       ),
+      APIType.websocket => RequestPane(
+        key: const Key("history-request-pane-websocket"),
+        selectedId: selectedId,
+        codePaneVisible: codePaneVisible,
+        onPressedCodeButton: () {
+          ref.read(historyCodePaneVisibleStateProvider.notifier).state =
+              !codePaneVisible;
+        },
+        showViewCodeButton: !isCompact,
+        showIndicators: [hasBody, scriptsLength > 0],
+        tabLabels: const [
+          'Messages',
+          kLabelScripts,
+        ],
+        children: [
+          const HisRequestBody(),
+          const HistoryScriptsTab(),
+        ],
+      ),
+      APIType.mqtt => RequestPane(
+        key: const Key("history-request-pane-mqtt"),
+        selectedId: selectedId,
+        codePaneVisible: codePaneVisible,
+        onPressedCodeButton: () {
+          ref.read(historyCodePaneVisibleStateProvider.notifier).state =
+              !codePaneVisible;
+        },
+        showViewCodeButton: !isCompact,
+        showIndicators: [headerLength > 0, hasBody, scriptsLength > 0],
+        tabLabels: const [
+          'Details',
+          'Payload',
+          kLabelScripts,
+        ],
+        children: [
+          RequestDataTable(rows: headersMap, keyName: kNameHeader),
+          const HisRequestBody(),
+          const HistoryScriptsTab(),
+        ],
+      ),
+      APIType.grpc => RequestPane(
+        key: const Key("history-request-pane-grpc"),
+        selectedId: selectedId,
+        codePaneVisible: codePaneVisible,
+        onPressedCodeButton: () {
+          ref.read(historyCodePaneVisibleStateProvider.notifier).state =
+              !codePaneVisible;
+        },
+        showViewCodeButton: !isCompact,
+        showIndicators: [hasBody, scriptsLength > 0],
+        tabLabels: const [
+          'Request',
+          kLabelScripts,
+        ],
+        children: [
+          const HisRequestBody(),
+          const HistoryScriptsTab(),
+        ],
+      ),
       _ => kSizedBoxEmpty,
     };
   }
@@ -237,6 +296,15 @@ class HisRequestBody extends ConsumerWidget {
           key: Key("${selectedHistoryModel?.historyId}-query"),
           fieldKey: "${selectedHistoryModel?.historyId}-query-viewer",
           initialValue: requestModel?.query,
+          readOnly: true,
+        ),
+      ),
+      APIType.websocket || APIType.mqtt || APIType.grpc => Padding(
+        padding: kPt5o10,
+        child: TextFieldEditor(
+          key: Key("${selectedHistoryModel?.historyId}-protocol-body"),
+          fieldKey: "${selectedHistoryModel?.historyId}-protocol-body-viewer",
+          initialValue: requestModel?.body,
           readOnly: true,
         ),
       ),

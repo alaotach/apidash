@@ -119,6 +119,67 @@ void main() async {
     });
   });
 
+  group('CollectionStateNotifier API Type Switch Tests', () {
+    late ProviderContainer container;
+    late CollectionStateNotifier notifier;
+
+    setUp(() {
+      container = createContainer();
+      notifier = container.read(collectionStateNotifierProvider.notifier);
+    });
+
+    test('should preserve url when switching back to websocket', () {
+      final id = notifier.state!.entries.first.key;
+      notifier.update(id: id, apiType: APIType.websocket);
+      notifier.update(id: id, url: 'ws://echo.test');
+
+      notifier.update(id: id, apiType: APIType.mqtt);
+      notifier.update(id: id, apiType: APIType.websocket);
+
+      final updatedRequest = notifier.getRequestModel(id);
+      expect(updatedRequest?.apiType, APIType.websocket);
+      expect(updatedRequest?.httpRequestModel?.url, 'ws://echo.test');
+    });
+
+    test('should preserve websocket url when switching via ai', () {
+      final id = notifier.state!.entries.first.key;
+      notifier.update(id: id, apiType: APIType.websocket);
+      notifier.update(id: id, url: 'ws://echo.ai.test');
+
+      notifier.update(id: id, apiType: APIType.ai);
+      notifier.update(id: id, apiType: APIType.websocket);
+
+      final updatedRequest = notifier.getRequestModel(id);
+      expect(updatedRequest?.apiType, APIType.websocket);
+      expect(updatedRequest?.httpRequestModel?.url, 'ws://echo.ai.test');
+    });
+
+    test('should keep websocket and graphql urls separate', () {
+      final id = notifier.state!.entries.first.key;
+      notifier.update(id: id, apiType: APIType.websocket);
+      notifier.update(id: id, url: 'ws://socket.test');
+
+      notifier.update(id: id, apiType: APIType.graphql);
+      var model = notifier.getRequestModel(id);
+      expect(model?.apiType, APIType.graphql);
+      expect(model?.httpRequestModel?.url, '');
+
+      notifier.update(id: id, url: 'https://api.graphql.test/graphql');
+      notifier.update(id: id, apiType: APIType.websocket);
+      model = notifier.getRequestModel(id);
+      expect(model?.apiType, APIType.websocket);
+      expect(model?.httpRequestModel?.url, 'ws://socket.test');
+
+      notifier.update(id: id, apiType: APIType.graphql);
+      model = notifier.getRequestModel(id);
+      expect(model?.httpRequestModel?.url, 'https://api.graphql.test/graphql');
+    });
+
+    tearDown(() {
+      container.dispose();
+    });
+  });
+
   group('CollectionStateNotifier Auth Tests', () {
     late ProviderContainer container;
     late CollectionStateNotifier notifier;

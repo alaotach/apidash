@@ -30,9 +30,9 @@ String getHistoryRequestName(HistoryMetaModel model) {
 String getHistoryRequestKey(HistoryMetaModel model) {
   String timeStamp = humanizeDate(model.timeStamp);
   if (model.name.isNotEmpty) {
-    return model.name + model.method.name + timeStamp;
+    return model.apiType.name + model.name + model.method.name + timeStamp;
   } else {
-    return model.url + model.method.name + timeStamp;
+    return model.apiType.name + model.url + model.method.name + timeStamp;
   }
 }
 

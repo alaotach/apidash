@@ -103,6 +103,7 @@ class _HistoryExpansionTileState extends ConsumerState<HistoryExpansionTile>
     final animation = Tween(begin: 0.0, end: 0.25).animate(animationController);
     final colorScheme = Theme.of(context).colorScheme;
     final selectedGroupId = ref.watch(selectedRequestGroupIdStateProvider);
+    final selectedHistoryId = ref.watch(selectedHistoryIdStateProvider);
     return ExpansionTile(
       dense: true,
       title: Row(
@@ -138,13 +139,19 @@ class _HistoryExpansionTileState extends ConsumerState<HistoryExpansionTile>
       initiallyExpanded: widget.initiallyExpanded,
       childrenPadding: kPv8 + kPe4,
       children: widget.requestGroups.values.map((item) {
+        final selectedModelInGroup = item.where(
+          (model) => model.historyId == selectedHistoryId,
+        );
+        final displayModel = selectedModelInGroup.isNotEmpty
+            ? selectedModelInGroup.first
+            : item.first;
         return Padding(
           padding: kPv2 + kPh4,
           child: SidebarHistoryCard(
             id: item.first.historyId,
-            apiType: item.first.apiType,
+            apiType: displayModel.apiType,
             models: item,
-            method: item.first.method,
+            method: displayModel.method,
             isSelected: selectedGroupId == getHistoryRequestKey(item.first),
             requestGroupSize: item.length,
             onTap: () {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:apidash_core/apidash_core.dart';
 import 'package:apidash/models/models.dart';
@@ -63,11 +65,14 @@ class ResponseBody extends StatelessWidget {
       options.remove(ResponseBodyView.code);
     }
 
+    final bytes =
+        responseModel.bodyBytes ?? Uint8List.fromList(utf8.encode(body));
+
     return ResponseBodySuccess(
       key: Key("${selectedRequestModel!.id}-response"),
       mediaType: mediaType,
       options: options,
-      bytes: responseModel.bodyBytes!,
+      bytes: bytes,
       body: body,
       formattedBody: formattedBody,
       highlightLanguage: highlightLanguage,

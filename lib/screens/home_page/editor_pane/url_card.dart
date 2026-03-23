@@ -34,7 +34,11 @@ class EditorPaneRequestURLCard extends ConsumerWidget {
                 children: [
                   switch (apiType) {
                     APIType.rest => const DropdownButtonHTTPMethod(),
-                    APIType.graphql => kSizedBoxEmpty,
+                    APIType.graphql ||
+                    APIType.websocket ||
+                    APIType.mqtt ||
+                    APIType.grpc =>
+                      kSizedBoxEmpty,
                     APIType.ai => const AIModelSelector(),
                     null => kSizedBoxEmpty,
                   },
@@ -51,7 +55,11 @@ class EditorPaneRequestURLCard extends ConsumerWidget {
                 children: [
                   switch (apiType) {
                     APIType.rest => const DropdownButtonHTTPMethod(),
-                    APIType.graphql => kSizedBoxEmpty,
+                    APIType.graphql ||
+                    APIType.websocket ||
+                    APIType.mqtt ||
+                    APIType.grpc =>
+                      kSizedBoxEmpty,
                     APIType.ai => const AIModelSelector(),
                     null => kSizedBoxEmpty,
                   },

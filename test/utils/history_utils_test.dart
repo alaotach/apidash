@@ -23,7 +23,7 @@ void main() {
       final model = historyMetaModel1.copyWith(name: 'Social');
 
       final result = getHistoryRequestKey(model);
-      expect(result, 'SocialgetJanuary 1, 2024');
+      expect(result, 'restSocialgetJanuary 1, 2024');
     });
 
     test('returns url + method + timestamp when name is empty', () {
@@ -31,7 +31,7 @@ void main() {
 
       final result = getHistoryRequestKey(model);
       expect(
-          result, 'https://api.apidash.dev/humanize/socialgetJanuary 1, 2024');
+          result, 'resthttps://api.apidash.dev/humanize/socialgetJanuary 1, 2024');
     });
   });
 

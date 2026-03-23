@@ -11,6 +11,9 @@ import '../response_pane.dart';
 import 'ai_request/request_pane_ai.dart';
 import 'request_pane_graphql.dart';
 import 'request_pane_rest.dart';
+import 'request_pane_websocket.dart';
+import 'request_pane_mqtt.dart';
+import 'request_pane_grpc.dart';
 
 class EditRequestPane extends ConsumerWidget {
   const EditRequestPane({
@@ -27,9 +30,13 @@ class EditRequestPane extends ConsumerWidget {
         .watch(selectedRequestModelProvider.select((value) => value?.apiType));
     final isPopped =
         ref.watch(dashbotWindowNotifierProvider.select((s) => s.isPopped));
+    
+    final isHttp = apiType == APIType.rest ||
+        apiType == APIType.graphql ||
+        apiType == APIType.ai;
 
     // When Dashbot window is not popped, show compact segmented layout like History page
-    if (!isPopped && !context.isMediumWindow) {
+    if (isHttp && !isPopped && !context.isMediumWindow) {
       return DefaultTabController(
         length: 3,
         child: Builder(
@@ -61,6 +68,9 @@ class EditRequestPane extends ConsumerWidget {
                         APIType.ai => EditAIRequestPane(
                             showViewCodeButton: false,
                           ),
+                        APIType.websocket => const EditWebSocketRequestPane(),
+                        APIType.mqtt => const EditMqttRequestPane(),
+                        APIType.grpc => const EditGrpcRequestPane(),
                         _ => kSizedBoxEmpty,
                       },
                       ResponsePane(),
@@ -86,6 +96,9 @@ class EditRequestPane extends ConsumerWidget {
       APIType.ai => EditAIRequestPane(
           showViewCodeButton: showViewCodeButton,
         ),
+      APIType.websocket => const EditWebSocketRequestPane(),
+      APIType.mqtt => const EditMqttRequestPane(),
+      APIType.grpc => const EditGrpcRequestPane(),
       _ => kSizedBoxEmpty,
     };
   }
