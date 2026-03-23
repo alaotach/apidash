@@ -1332,34 +1332,34 @@ class _EditGrpcRequestPaneState
 
     _schemaFormValues
       ..clear()
-                                  spacing: 6,
-                                  runSpacing: 6,
-                                  children: _uploadedProtoFiles
-                                      .map(
-                                        (path) => InputChip(
-                                            label: Text(
-                                              getFilenameFromPath(path),
-                                              style: TextStyle(
-                                                color: colorScheme
-                                                    .onErrorContainer,
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                            onDeleted: () =>
-                                                _removeUploadedProtoFile(path),
-                                            deleteIconColor:
-                                                colorScheme.onErrorContainer,
-                                            backgroundColor: colorScheme
-                                                .errorContainer
-                                                .withAlpha(80),
-                                            side: BorderSide(
-                                              color: colorScheme
-                                                  .onErrorContainer
-                                                  .withAlpha(60),
-                                            ),
-                                          ),
-                                        )
-                                        .toList(growable: false),
+      ..addAll(parsedBody);
+  }
+
+  void _maybePopulateMockJsonForSchema(List<GrpcRequestFieldSchema> schema) {
+    if (schema.isEmpty || _hasSavedJsonForCurrentMethod()) {
+      return;
+    }
+    final mock = <String, dynamic>{
+      for (final field in schema)
+        field.jsonName: _mockValueForField(field),
+    };
+    _bodyCtrl.text = const JsonEncoder.withIndent('  ').convert(mock);
+    _initializeSchemaFormValues(schema);
+    _persistGrpcDraft();
+  }
+
+  bool _hasSavedJsonForCurrentMethod() {
+    final raw = _bodyCtrl.text.trim();
+    if (raw.isEmpty || raw == _kDefaultGrpcBody) {
+      return false;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.isNotEmpty;
+      }
+      // Non-map JSON (string/list/number) is still user-provided content.
+      return true;
     } catch (_) {
       // If JSON is invalid but non-empty, keep user input untouched.
       return true;

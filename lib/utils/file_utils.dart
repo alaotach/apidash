@@ -77,7 +77,7 @@ Future<XFile?> pickFile() async {
 
 Future<List<XFile>> pickFiles({List<String>? extensions}) async {
   final groups = (extensions == null || extensions.isEmpty)
-      ? null
+      ? <XTypeGroup>[]
       : <XTypeGroup>[
           XTypeGroup(
             label: 'Allowed files',
