@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:better_networking/better_networking.dart';
@@ -29,12 +28,13 @@ class WebSocketService {
     _subscription = _channel!.stream.listen(
       (data) {
         final isText = data is String;
-        final payload = isText ? data as String : base64Encode((data as List).cast<int>());
         final sizeBytes = isText
             ? (data as String).length
             : Uint8List.fromList((data as List).cast<int>()).length;
         controller.add(WebSocketMessage(
-          payload: payload,
+          textPayload: isText ? data as String : null,
+          binaryPayload:
+              isText ? null : Uint8List.fromList((data as List).cast<int>()),
           isSent: false,
           timestamp: DateTime.now(),
           type: isText ? 'text' : 'binary',

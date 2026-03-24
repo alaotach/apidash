@@ -6,8 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:better_networking/better_networking.dart';
+import 'package:apidash/generated/google/protobuf/descriptor.pb.dart'
+  as $descriptor;
 import 'package:apidash/providers/providers.dart';
 import 'package:apidash/providers/websocket_providers.dart';
+import 'package:apidash/utils/file_utils.dart';
 
 enum _WsPaneTab { messages, headers, connection }
 
@@ -16,6 +19,196 @@ enum _WsFilter { all, sent, received, errors }
 enum _WsPayloadView { raw, pretty, json, hex }
 
 enum _WsSendMode { text, json, binaryBase64 }
+
+enum _WsBinaryDecoder {
+  none,
+  utf8,
+  protobuf,
+  messagePack,
+  flatBuffers,
+  fixedQuote,
+  fixedTrade,
+  fixedOrderBook,
+}
+
+const int _kFlatBaseTypeNone = 0;
+const int _kFlatBaseTypeUType = 1;
+const int _kFlatBaseTypeBool = 2;
+const int _kFlatBaseTypeByte = 3;
+const int _kFlatBaseTypeUByte = 4;
+const int _kFlatBaseTypeShort = 5;
+const int _kFlatBaseTypeUShort = 6;
+const int _kFlatBaseTypeInt = 7;
+const int _kFlatBaseTypeUInt = 8;
+const int _kFlatBaseTypeLong = 9;
+const int _kFlatBaseTypeULong = 10;
+const int _kFlatBaseTypeFloat = 11;
+const int _kFlatBaseTypeDouble = 12;
+const int _kFlatBaseTypeString = 13;
+const int _kFlatBaseTypeVector = 14;
+const int _kFlatBaseTypeObj = 15;
+const int _kFlatBaseTypeUnion = 16;
+const int _kFlatBaseTypeArray = 17;
+
+class _WsQuoteEvent {
+  const _WsQuoteEvent({
+    required this.symbol,
+    required this.sequence,
+    required this.timestampMicros,
+    required this.bid,
+    required this.ask,
+    required this.bidSize,
+    required this.askSize,
+  });
+
+  final String symbol;
+  final int sequence;
+  final int timestampMicros;
+  final double bid;
+  final double ask;
+  final double bidSize;
+  final double askSize;
+
+  Map<String, Object> toJson() => {
+        'event': 'quote',
+        'symbol': symbol,
+        'sequence': sequence,
+        'timestampMicros': timestampMicros,
+        'bid': bid,
+        'ask': ask,
+        'bidSize': bidSize,
+        'askSize': askSize,
+      };
+}
+
+class _WsTradeEvent {
+  const _WsTradeEvent({
+    required this.symbol,
+    required this.sequence,
+    required this.timestampMicros,
+    required this.price,
+    required this.size,
+    required this.side,
+  });
+
+  final String symbol;
+  final int sequence;
+  final int timestampMicros;
+  final double price;
+  final double size;
+  final String side;
+
+  Map<String, Object> toJson() => {
+        'event': 'trade',
+        'symbol': symbol,
+        'sequence': sequence,
+        'timestampMicros': timestampMicros,
+        'price': price,
+        'size': size,
+        'side': side,
+      };
+}
+
+class _WsOrderBookEvent {
+  const _WsOrderBookEvent({
+    required this.symbol,
+    required this.sequence,
+    required this.timestampMicros,
+    required this.bidPrice,
+    required this.bidSize,
+    required this.askPrice,
+    required this.askSize,
+  });
+
+  final String symbol;
+  final int sequence;
+  final int timestampMicros;
+  final double bidPrice;
+  final double bidSize;
+  final double askPrice;
+  final double askSize;
+
+  Map<String, Object> toJson() => {
+        'event': 'orderbook',
+        'symbol': symbol,
+        'sequence': sequence,
+        'timestampMicros': timestampMicros,
+        'bidPrice': bidPrice,
+        'bidSize': bidSize,
+        'askPrice': askPrice,
+        'askSize': askSize,
+      };
+}
+
+class _WsDecodedPayload {
+  const _WsDecodedPayload({
+    required this.display,
+    this.sequence,
+    this.streamKey,
+  });
+
+  final String display;
+  final int? sequence;
+  final String? streamKey;
+}
+
+class _WsProtoFieldSchema {
+  const _WsProtoFieldSchema({
+    required this.name,
+    required this.number,
+    required this.type,
+    this.typeName,
+  });
+
+  final String name;
+  final int number;
+  final int type;
+  final String? typeName;
+}
+
+class _WsFlatFieldSchema {
+  const _WsFlatFieldSchema({
+    required this.name,
+    required this.id,
+    this.offset,
+    required this.baseType,
+    required this.elementType,
+    this.objectType,
+    this.structType,
+  });
+
+  final String name;
+  final int id;
+  final int? offset;
+  final int baseType;
+  final int elementType;
+  final String? objectType;
+  final bool? structType;
+}
+
+class _WsFlatObjectSchema {
+  const _WsFlatObjectSchema({
+    required this.name,
+    required this.fields,
+    required this.isStruct,
+    required this.byteSize,
+  });
+
+  final String name;
+  final Map<int, _WsFlatFieldSchema> fields;
+  final bool isStruct;
+  final int byteSize;
+}
+
+class _WsFlatSchemaBundle {
+  const _WsFlatSchemaBundle({
+    required this.schemas,
+    this.detectedRootTable,
+  });
+
+  final Map<String, _WsFlatObjectSchema> schemas;
+  final String? detectedRootTable;
+}
 
 class EditWebSocketRequestPane extends ConsumerStatefulWidget {
   const EditWebSocketRequestPane({super.key});
@@ -38,13 +231,23 @@ class _EditWebSocketRequestPaneState
   _WsPaneTab _activeTab = _WsPaneTab.messages;
   _WsFilter _activeFilter = _WsFilter.all;
   _WsPayloadView _payloadView = _WsPayloadView.pretty;
+  _WsBinaryDecoder _binaryDecoder = _WsBinaryDecoder.utf8;
   _WsSendMode _sendMode = _WsSendMode.text;
+  bool _showAdvancedTools = false;
+  bool _showAdvancedSend = false;
   bool _collapseSimilar = false;
   bool _groupByType = false;
   int _delaySendMs = 0;
   int _throttleMs = 0;
   DateTime _nextSendAt = DateTime.fromMillisecondsSinceEpoch(0);
   String? _jsonInputError;
+  String? _protoSchemaFileName;
+  String? _flatSchemaFileName;
+  String? _selectedProtoMessageType;
+  final Map<String, Map<int, _WsProtoFieldSchema>> _protoFieldSchemas = {};
+  final Map<int, String> _flatBufferFieldAliases = {};
+  final Map<String, _WsFlatObjectSchema> _flatTableSchemas = {};
+  String? _selectedFlatTableType;
 
   @override
   void initState() {
@@ -78,6 +281,19 @@ class _EditWebSocketRequestPaneState
     final colorScheme = Theme.of(context).colorScheme;
     final filteredMessages = _filteredMessages(session.messages);
     final timelineEntries = _timelineEntries(filteredMessages);
+    final decodedPayloadByMessage =
+      _buildDecodedPayloadsWithGapDetection(filteredMessages);
+    final durationSecs = session.connectedAt == null
+        ? 0
+        : DateTime.now().difference(session.connectedAt!).inSeconds;
+    final msgRate = durationSecs <= 0
+        ? '--'
+        : (session.messages.length / durationSecs).toStringAsFixed(2);
+    final statusText = switch (session.connectionState) {
+      WebSocketConnectionState.connected => 'Connected',
+      WebSocketConnectionState.connecting => 'Connecting',
+      WebSocketConnectionState.disconnected => 'Disconnected',
+    };
 
     ref.listen(selectedIdStateProvider, (previous, next) {
       if (previous != next) {
@@ -149,129 +365,317 @@ class _EditWebSocketRequestPaneState
             ),
           ),
 
-        // ── Stats strip ─────────────────────────────────────────
-        _StatsStrip(session: session),
-
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-          child: SegmentedButton<_WsPaneTab>(
-            showSelectedIcon: false,
-            segments: const [
-              ButtonSegment(value: _WsPaneTab.messages, label: Text('Messages')),
-              ButtonSegment(value: _WsPaneTab.headers, label: Text('Headers')),
-              ButtonSegment(value: _WsPaneTab.connection, label: Text('Connection')),
+          child: Row(
+            children: [
+              Expanded(
+                child: SegmentedButton<_WsPaneTab>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                        value: _WsPaneTab.messages, label: Text('Messages')),
+                    ButtonSegment(
+                        value: _WsPaneTab.headers, label: Text('Headers')),
+                    ButtonSegment(
+                        value: _WsPaneTab.connection,
+                        label: Text('Connection')),
+                  ],
+                  selected: {_activeTab},
+                  onSelectionChanged: (selection) {
+                    setState(() => _activeTab = selection.first);
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '$statusText • ${session.messages.length} msgs • $msgRate msg/s',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall
+                    ?.copyWith(color: colorScheme.onSurface.withAlpha(180)),
+              ),
             ],
-            selected: {_activeTab},
-            onSelectionChanged: (selection) {
-              setState(() => _activeTab = selection.first);
-            },
           ),
         ),
 
         if (_activeTab == _WsPaneTab.messages)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: Column(
-              children: [
-                Row(
+            child: Column(children: [
+              LayoutBuilder(builder: (context, constraints) {
+                final typeField = DropdownButtonFormField<_WsFilter>(
+                  value: _activeFilter,
+                  isDense: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Type',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: _WsFilter.all, child: Text('All')),
+                    DropdownMenuItem(value: _WsFilter.sent, child: Text('Sent')),
+                    DropdownMenuItem(value: _WsFilter.received, child: Text('Received')),
+                    DropdownMenuItem(value: _WsFilter.errors, child: Text('Errors')),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setState(() => _activeFilter = value);
+                  },
+                );
+
+                final searchField = TextField(
+                  controller: _searchController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    labelText: 'Search messages',
+                    hintText: 'Find payload content',
+                    prefixIcon: Icon(Icons.search_rounded),
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                );
+
+                final actions = Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: SegmentedButton<_WsFilter>(
-                        showSelectedIcon: false,
-                        style: const ButtonStyle(
-                          visualDensity: VisualDensity.compact,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        segments: const [
-                          ButtonSegment(value: _WsFilter.all, label: Text('All')),
-                          ButtonSegment(value: _WsFilter.sent, label: Text('Sent')),
-                          ButtonSegment(value: _WsFilter.received, label: Text('Received')),
-                          ButtonSegment(value: _WsFilter.errors, label: Text('Errors')),
-                        ],
-                        selected: {_activeFilter},
-                        onSelectionChanged: (selection) {
-                          setState(() => _activeFilter = selection.first);
-                        },
+                    IconButton(
+                      tooltip: _groupByType ? 'Ungroup by type' : 'Group by type',
+                      onPressed: () => setState(() => _groupByType = !_groupByType),
+                      icon: Icon(
+                        Icons.segment_rounded,
+                        color: _groupByType ? colorScheme.primary : null,
                       ),
                     ),
+                    IconButton(
+                      tooltip: _collapseSimilar
+                          ? 'Expand similar messages'
+                          : 'Collapse similar messages',
+                      onPressed: () => setState(
+                          () => _collapseSimilar = !_collapseSimilar),
+                      icon: Icon(
+                        Icons.compress_rounded,
+                        color: _collapseSimilar ? colorScheme.primary : null,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: _autoScroll ? 'Disable auto-scroll' : 'Enable auto-scroll',
+                      onPressed: () => setState(() => _autoScroll = !_autoScroll),
+                      icon: Icon(
+                        Icons.vertical_align_bottom_rounded,
+                        color: _autoScroll ? colorScheme.primary : null,
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: () => setState(
+                          () => _showAdvancedTools = !_showAdvancedTools),
+                      icon: const Icon(Icons.tune_rounded, size: 16),
+                      label: Text(_showAdvancedTools ? 'Hide advanced' : 'Advanced'),
+                    ),
+                  ],
+                );
+
+                if (constraints.maxWidth < 900) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      typeField,
+                      const SizedBox(height: 8),
+                      searchField,
+                      const SizedBox(height: 4),
+                      Align(alignment: Alignment.centerLeft, child: actions),
+                    ],
+                  );
+                }
+
+                return Row(
+                  children: [
+                    SizedBox(width: 140, child: typeField),
                     const SizedBox(width: 8),
-                    Row(
-                      children: [
-                        const Text('Auto-scroll', style: TextStyle(fontSize: 12)),
-                        Switch.adaptive(
-                          value: _autoScroll,
-                          onChanged: (v) => setState(() => _autoScroll = v),
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                      ],
-                    ),
+                    Expanded(child: searchField),
+                    const SizedBox(width: 6),
+                    actions,
                   ],
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Wrap(
-                        spacing: 12,
-                        runSpacing: 4,
-                        children: [
-                          FilterChip(
-                            label: const Text('Collapse similar messages'),
-                            selected: _collapseSimilar,
-                            onSelected: (v) => setState(() => _collapseSimilar = v),
-                          ),
-                          FilterChip(
-                            label: const Text('Group by type'),
-                            selected: _groupByType,
-                            onSelected: (v) => setState(() => _groupByType = v),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+                );
+              }),
+              if (_showAdvancedTools) ...[
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _searchController,
-                        onChanged: (_) => setState(() {}),
-                        decoration: const InputDecoration(
-                          labelText: 'Search messages',
-                          hintText: 'Find payload content',
-                          prefixIcon: Icon(Icons.search_rounded),
-                          border: OutlineInputBorder(),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest.withAlpha(130),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    children: [
+                      LayoutBuilder(builder: (context, constraints) {
+                        final payloadViewField =
+                            DropdownButtonFormField<_WsPayloadView>(
+                          value: _payloadView,
                           isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 190,
-                      child: DropdownButtonFormField<_WsPayloadView>(
-                        value: _payloadView,
-                        decoration: const InputDecoration(
-                          labelText: 'Payload View',
-                          border: OutlineInputBorder(),
+                          decoration: const InputDecoration(
+                            labelText: 'Payload View',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const [
+                            DropdownMenuItem(
+                                value: _WsPayloadView.raw, child: Text('Raw')),
+                            DropdownMenuItem(
+                                value: _WsPayloadView.pretty,
+                                child: Text('Pretty')),
+                            DropdownMenuItem(
+                                value: _WsPayloadView.json, child: Text('JSON')),
+                            DropdownMenuItem(
+                                value: _WsPayloadView.hex, child: Text('Hex')),
+                          ],
+                          onChanged: (v) {
+                            if (v == null) return;
+                            setState(() => _payloadView = v);
+                          },
+                        );
+
+                        final binaryDecoderField =
+                            DropdownButtonFormField<_WsBinaryDecoder>(
+                          value: _binaryDecoder,
                           isDense: true,
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: _WsPayloadView.raw, child: Text('Raw')),
-                          DropdownMenuItem(value: _WsPayloadView.pretty, child: Text('Pretty')),
-                          DropdownMenuItem(value: _WsPayloadView.json, child: Text('JSON')),
-                          DropdownMenuItem(value: _WsPayloadView.hex, child: Text('Hex')),
+                          decoration: const InputDecoration(
+                            labelText: 'Binary Decoder',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const [
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.none,
+                                child: Text('Raw bytes')),
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.utf8,
+                                child: Text('UTF-8')),
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.protobuf,
+                                child: Text('Protobuf (wire)')),
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.messagePack,
+                                child: Text('MessagePack')),
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.flatBuffers,
+                                child: Text('FlatBuffers')),
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.fixedQuote,
+                                child: Text('Fixed: Quote')),
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.fixedTrade,
+                                child: Text('Fixed: Trade')),
+                            DropdownMenuItem(
+                                value: _WsBinaryDecoder.fixedOrderBook,
+                                child: Text('Fixed: OrderBook')),
+                          ],
+                          onChanged: (v) {
+                            if (v == null) return;
+                            setState(() => _binaryDecoder = v);
+                          },
+                        );
+
+                        if (constraints.maxWidth < 700) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              payloadViewField,
+                              const SizedBox(height: 8),
+                              binaryDecoderField,
+                            ],
+                          );
+                        }
+                        return Row(
+                          children: [
+                            Expanded(child: payloadViewField),
+                            const SizedBox(width: 8),
+                            Expanded(child: binaryDecoderField),
+                          ],
+                        );
+                      }),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: _uploadProtobufDescriptor,
+                            icon: const Icon(Icons.upload_file_rounded, size: 16),
+                            label: Text(_protoSchemaFileName == null
+                                ? 'Upload Protobuf Descriptor'
+                                : 'Descriptor: $_protoSchemaFileName'),
+                          ),
+                          if (_protoFieldSchemas.isNotEmpty)
+                            SizedBox(
+                              width: 300,
+                              child: DropdownButtonFormField<String>(
+                                value: _selectedProtoMessageType,
+                                isExpanded: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Proto Message Type',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                                items: _protoFieldSchemas.keys
+                                    .map((name) => DropdownMenuItem<String>(
+                                          value: name,
+                                          child: Text(name,
+                                              overflow: TextOverflow.ellipsis),
+                                        ))
+                                    .toList(growable: false),
+                                onChanged: (value) {
+                                  if (value == null) return;
+                                  setState(
+                                      () => _selectedProtoMessageType = value);
+                                },
+                              ),
+                            ),
+                          OutlinedButton.icon(
+                            onPressed: _uploadFlatSchema,
+                            icon: const Icon(Icons.schema_rounded, size: 16),
+                            label: Text(_flatSchemaFileName == null
+                                ? 'Upload FlatBuffers BFBS/JSON'
+                                : 'Flat schema: $_flatSchemaFileName'),
+                          ),
+                          if (_flatTableSchemas.isNotEmpty)
+                            SizedBox(
+                              width: 300,
+                              child: DropdownButtonFormField<String>(
+                                value: _selectedFlatTableType,
+                                isExpanded: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'FlatBuffers Table',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                                items: _flatTableSchemas.keys
+                                    .map((name) => DropdownMenuItem<String>(
+                                          value: name,
+                                          child: Text(name,
+                                              overflow: TextOverflow.ellipsis),
+                                        ))
+                                    .toList(growable: false),
+                                onChanged: (value) {
+                                  if (value == null) return;
+                                  setState(() {
+                                    _selectedFlatTableType = value;
+                                    final schema =
+                                        _flatTableSchemas[value]?.fields ??
+                                            const {};
+                                    _flatBufferFieldAliases
+                                      ..clear()
+                                      ..addEntries(schema.entries.map(
+                                          (e) => MapEntry(e.key, e.value.name)));
+                                  });
+                                },
+                              ),
+                            ),
                         ],
-                        onChanged: (v) {
-                          if (v == null) return;
-                          setState(() => _payloadView = v);
-                        },
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
-            ),
+            ]),
           ),
 
         // ── Message timeline ─────────────────────────────────────
@@ -316,11 +720,15 @@ class _EditWebSocketRequestPaneState
                         );
                       }
                       final msg = entry.message!;
+                      final decoded = decodedPayloadByMessage[msg] ??
+                          _WsDecodedPayload(display: _renderPayload(msg));
                       return _MessageRow(
                         message: msg,
                         index: i + 1,
                         repeatCount: entry.repeatCount,
-                        renderedPayload: _renderPayload(msg),
+                        renderedPayload: decoded.display,
+                        sequence: decoded.sequence,
+                        streamKey: decoded.streamKey,
                         jsonError: _jsonErrorFor(msg),
                         onResend: () => _resendMessage(notifier, msg),
                         onCopy: () => _copyMessage(msg),
@@ -339,134 +747,185 @@ class _EditWebSocketRequestPaneState
             padding: const EdgeInsets.all(12),
             child: Column(
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<_WsSendMode>(
-                        value: _sendMode,
-                        decoration: const InputDecoration(
-                          labelText: 'Send Mode',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: _WsSendMode.text, child: Text('TEXT')),
-                          DropdownMenuItem(value: _WsSendMode.json, child: Text('JSON')),
-                          DropdownMenuItem(value: _WsSendMode.binaryBase64, child: Text('BINARY (base64)')),
-                        ],
-                        onChanged: (v) {
-                          if (v == null) return;
-                          setState(() {
-                            _sendMode = v;
-                            _jsonInputError = null;
-                          });
-                          if (v == _WsSendMode.json) {
-                            _validateJsonInput(showSnack: false);
-                          }
-                        },
-                      ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () =>
+                        setState(() => _showAdvancedSend = !_showAdvancedSend),
+                    icon: const Icon(Icons.tune_rounded, size: 16),
+                    label: Text(
+                      _showAdvancedSend ? 'Hide advanced send' : 'Advanced send',
                     ),
-                    const SizedBox(width: 8),
-                    Row(
+                  ),
+                ),
+                if (_showAdvancedSend) ...[
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest.withAlpha(130),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
                       children: [
-                        const Text('Send on Enter', style: TextStyle(fontSize: 12)),
-                        Switch.adaptive(
-                          value: _sendOnEnter,
-                          onChanged: (v) => setState(() => _sendOnEnter = v),
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        Row(
+                          children: [
+                            Expanded(
+                              child: DropdownButtonFormField<_WsSendMode>(
+                                value: _sendMode,
+                                decoration: const InputDecoration(
+                                  labelText: 'Send Mode',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                                items: const [
+                                  DropdownMenuItem(
+                                      value: _WsSendMode.text,
+                                      child: Text('TEXT')),
+                                  DropdownMenuItem(
+                                      value: _WsSendMode.json,
+                                      child: Text('JSON')),
+                                  DropdownMenuItem(
+                                      value: _WsSendMode.binaryBase64,
+                                      child: Text('BINARY (base64)')),
+                                ],
+                                onChanged: (v) {
+                                  if (v == null) return;
+                                  setState(() {
+                                    _sendMode = v;
+                                    _jsonInputError = null;
+                                  });
+                                  if (v == _WsSendMode.json) {
+                                    _validateJsonInput(showSnack: false);
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Row(
+                              children: [
+                                const Text('Send on Enter',
+                                    style: TextStyle(fontSize: 12)),
+                                Switch.adaptive(
+                                  value: _sendOnEnter,
+                                  onChanged: (v) =>
+                                      setState(() => _sendOnEnter = v),
+                                  materialTapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        if (_sendMode == _WsSendMode.json) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: () =>
+                                    _validateJsonInput(showSnack: true),
+                                icon: Icon(
+                                  _jsonInputError == null
+                                      ? Icons.verified_rounded
+                                      : Icons.error_outline_rounded,
+                                  size: 16,
+                                ),
+                                label: const Text('Validate JSON'),
+                              ),
+                              const SizedBox(width: 8),
+                              OutlinedButton.icon(
+                                onPressed: _formatJsonInput,
+                                icon: const Icon(Icons.auto_fix_high_rounded,
+                                    size: 16),
+                                label: const Text('Format'),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  _jsonInputError == null
+                                      ? 'JSON looks valid.'
+                                      : _jsonInputError!,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        color: _jsonInputError == null
+                                            ? colorScheme.primary
+                                            : colorScheme.error,
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: DropdownButtonFormField<int>(
+                                initialValue: _delaySendMs,
+                                decoration: const InputDecoration(
+                                  labelText: 'Delay send',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                                items: const [
+                                  DropdownMenuItem(value: 0, child: Text('None')),
+                                  DropdownMenuItem(
+                                      value: 100, child: Text('100 ms')),
+                                  DropdownMenuItem(
+                                      value: 250, child: Text('250 ms')),
+                                  DropdownMenuItem(
+                                      value: 500, child: Text('500 ms')),
+                                  DropdownMenuItem(value: 1000, child: Text('1 s')),
+                                  DropdownMenuItem(value: 2000, child: Text('2 s')),
+                                  DropdownMenuItem(value: 5000, child: Text('5 s')),
+                                ],
+                                onChanged: (v) =>
+                                    setState(() => _delaySendMs = v ?? 0),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: DropdownButtonFormField<int>(
+                                initialValue: _throttleMs,
+                                decoration: const InputDecoration(
+                                  labelText: 'Throttle',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                                items: const [
+                                  DropdownMenuItem(value: 0, child: Text('Off')),
+                                  DropdownMenuItem(
+                                      value: 100,
+                                      child: Text('100 ms/frame')),
+                                  DropdownMenuItem(
+                                      value: 250,
+                                      child: Text('250 ms/frame')),
+                                  DropdownMenuItem(
+                                      value: 500,
+                                      child: Text('500 ms/frame')),
+                                  DropdownMenuItem(
+                                      value: 1000, child: Text('1 s/frame')),
+                                ],
+                                onChanged: (v) =>
+                                    setState(() => _throttleMs = v ?? 0),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            OutlinedButton.icon(
+                              onPressed: () => notifier.simulateDropConnection(),
+                              icon: const Icon(Icons.portable_wifi_off_rounded),
+                              label: const Text('Drop connection'),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
-                ),
-                if (_sendMode == _WsSendMode.json) ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: () => _validateJsonInput(showSnack: true),
-                        icon: Icon(
-                          _jsonInputError == null
-                              ? Icons.verified_rounded
-                              : Icons.error_outline_rounded,
-                          size: 16,
-                        ),
-                        label: const Text('Validate JSON'),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton.icon(
-                        onPressed: _formatJsonInput,
-                        icon: const Icon(Icons.auto_fix_high_rounded, size: 16),
-                        label: const Text('Format'),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          _jsonInputError == null
-                              ? 'JSON looks valid.'
-                              : _jsonInputError!,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: _jsonInputError == null
-                                    ? colorScheme.primary
-                                    : colorScheme.error,
-                              ),
-                        ),
-                      ),
-                    ],
                   ),
+                  const SizedBox(height: 8),
                 ],
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<int>(
-                        initialValue: _delaySendMs,
-                        decoration: const InputDecoration(
-                          labelText: 'Delay send',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: 0, child: Text('None')),
-                          DropdownMenuItem(value: 100, child: Text('100 ms')),
-                          DropdownMenuItem(value: 250, child: Text('250 ms')),
-                          DropdownMenuItem(value: 500, child: Text('500 ms')),
-                          DropdownMenuItem(value: 1000, child: Text('1 s')),
-                          DropdownMenuItem(value: 2000, child: Text('2 s')),
-                          DropdownMenuItem(value: 5000, child: Text('5 s')),
-                        ],
-                        onChanged: (v) => setState(() => _delaySendMs = v ?? 0),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: DropdownButtonFormField<int>(
-                        initialValue: _throttleMs,
-                        decoration: const InputDecoration(
-                          labelText: 'Throttle',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: 0, child: Text('Off')),
-                          DropdownMenuItem(value: 100, child: Text('100 ms/frame')),
-                          DropdownMenuItem(value: 250, child: Text('250 ms/frame')),
-                          DropdownMenuItem(value: 500, child: Text('500 ms/frame')),
-                          DropdownMenuItem(value: 1000, child: Text('1 s/frame')),
-                        ],
-                        onChanged: (v) => setState(() => _throttleMs = v ?? 0),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => notifier.simulateDropConnection(),
-                      icon: const Icon(Icons.portable_wifi_off_rounded),
-                      label: const Text('Drop connection'),
-                    ),
-                  ],
-                ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -586,7 +1045,7 @@ class _EditWebSocketRequestPaneState
       if (!filterMatch) return false;
       final query = _searchController.text.trim().toLowerCase();
       if (query.isEmpty) return true;
-      return msg.payload.toLowerCase().contains(query) ||
+      return _payloadForDisplay(msg).toLowerCase().contains(query) ||
           msg.type.toLowerCase().contains(query);
     }).toList(growable: false);
   }
@@ -605,7 +1064,7 @@ class _EditWebSocketRequestPaneState
       if (_collapseSimilar) {
         final canMerge = pending != null &&
             pending.message != null &&
-            pending.message!.payload == msg.payload &&
+          _samePayload(pending.message!, msg) &&
             pending.message!.type == msg.type &&
             pending.message!.isSent == msg.isSent;
         if (canMerge) {
@@ -623,7 +1082,7 @@ class _EditWebSocketRequestPaneState
   }
 
   Future<void> _copyMessage(WebSocketMessage msg) async {
-    await Clipboard.setData(ClipboardData(text: msg.payload));
+    await Clipboard.setData(ClipboardData(text: _payloadForDisplay(msg)));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Message copied to clipboard.')),
@@ -632,7 +1091,7 @@ class _EditWebSocketRequestPaneState
 
   void _duplicateMessage(WebSocketMessage msg) {
     setState(() {
-      _msgController.text = msg.payload;
+      _msgController.text = _payloadForComposer(msg);
       if (msg.type == 'binary') {
         _sendMode = _WsSendMode.binaryBase64;
       } else {
@@ -646,7 +1105,7 @@ class _EditWebSocketRequestPaneState
     if (msg.type == 'binary') {
       return null;
     }
-    final raw = msg.payload.trim();
+    final raw = (msg.textPayload ?? '').trim();
     if (raw.isEmpty || (!raw.startsWith('{') && !raw.startsWith('['))) {
       return null;
     }
@@ -674,10 +1133,8 @@ class _EditWebSocketRequestPaneState
       return;
     }
     if (msg.type == 'binary') {
-      late final Uint8List bytes;
-      try {
-        bytes = base64Decode(msg.payload);
-      } catch (_) {
+      final bytes = msg.binaryPayload;
+      if (bytes == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Cannot resend invalid binary payload.')),
         );
@@ -686,7 +1143,7 @@ class _EditWebSocketRequestPaneState
       _dispatchSend(
         notifier,
         sendAction: () => notifier.sendBinary(bytes),
-        requestBody: msg.payload,
+        requestBody: _payloadForDisplay(msg),
         mode: _WsSendMode.binaryBase64,
       );
       return;
@@ -696,8 +1153,8 @@ class _EditWebSocketRequestPaneState
     }
     _dispatchSend(
       notifier,
-      sendAction: () => notifier.sendText(msg.payload),
-      requestBody: msg.payload,
+      sendAction: () => notifier.sendText(msg.textPayload ?? ''),
+      requestBody: msg.textPayload ?? '',
       mode: _WsSendMode.text,
     );
   }
@@ -793,6 +1250,265 @@ class _EditWebSocketRequestPaneState
     }
   }
 
+  Future<void> _uploadProtobufDescriptor() async {
+    final files = await pickFiles(
+      extensions: const ['desc', 'pb', 'protoset', 'bin'],
+    );
+    if (files.isEmpty) {
+      return;
+    }
+    final file = files.first;
+    try {
+      final bytes = await file.readAsBytes();
+      final descriptorSet = $descriptor.FileDescriptorSet.fromBuffer(bytes);
+      final schemas = _extractProtoSchemas(descriptorSet);
+      if (schemas.isEmpty) {
+        throw const FormatException('No message schemas found in descriptor set');
+      }
+      final sortedKeys = schemas.keys.toList(growable: false)..sort();
+      if (!mounted) return;
+      setState(() {
+        _protoFieldSchemas
+          ..clear()
+          ..addAll(schemas);
+        _protoSchemaFileName = getFilenameFromPath(file.path);
+        _selectedProtoMessageType = sortedKeys.first;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Loaded ${schemas.length} protobuf message schemas.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load descriptor: $e')),
+      );
+    }
+  }
+
+  Future<void> _uploadFlatSchema() async {
+    final files = await pickFiles(
+      extensions: const ['bfbs', 'json'],
+    );
+    if (files.isEmpty) {
+      return;
+    }
+    final file = files.first;
+    try {
+      final bytes = await file.readAsBytes();
+      final fileName = getFilenameFromPath(file.path).toLowerCase();
+      final aliases = <int, String>{};
+      final tableSchemas = <String, _WsFlatObjectSchema>{};
+      String? detectedRootTable;
+      if (fileName.endsWith('.json')) {
+        final decoded = jsonDecode(utf8.decode(bytes));
+        if (decoded is Map<String, dynamic>) {
+          final rawMap = decoded['fieldAliases'] ?? decoded['fields'] ?? decoded;
+          if (rawMap is Map) {
+            for (final entry in rawMap.entries) {
+              final fieldIndex = int.tryParse(entry.key.toString());
+              final fieldName = entry.value?.toString();
+              if (fieldIndex != null && fieldName != null && fieldName.isNotEmpty) {
+                aliases[fieldIndex] = fieldName;
+              }
+            }
+          }
+        }
+      } else {
+        final bundle = _extractFlatSchemasFromBfbs(bytes);
+        tableSchemas.addAll(bundle.schemas);
+        detectedRootTable = bundle.detectedRootTable;
+        if (tableSchemas.isNotEmpty) {
+          final sortedTables = tableSchemas.keys.toList(growable: false)..sort();
+          final selectedByDefault =
+              (detectedRootTable != null && tableSchemas.containsKey(detectedRootTable))
+                  ? detectedRootTable
+                  : sortedTables.first;
+          final firstSchema =
+              tableSchemas[selectedByDefault]?.fields ?? const {};
+          aliases.addEntries(
+            firstSchema.entries.map((e) => MapEntry(e.key, e.value.name)),
+          );
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _flatSchemaFileName = getFilenameFromPath(file.path);
+        _flatBufferFieldAliases
+          ..clear()
+          ..addAll(aliases);
+        if (tableSchemas.isNotEmpty) {
+          _flatTableSchemas
+            ..clear()
+            ..addAll(tableSchemas);
+          final sortedKeys = _flatTableSchemas.keys.toList(growable: false)
+            ..sort();
+          _selectedFlatTableType =
+              (detectedRootTable != null &&
+                  _flatTableSchemas.containsKey(detectedRootTable))
+                  ? detectedRootTable
+                  : sortedKeys.first;
+        } else if (fileName.endsWith('.json')) {
+          _flatTableSchemas.clear();
+          _selectedFlatTableType = null;
+        }
+      });
+
+      final message = tableSchemas.isNotEmpty
+          ? (detectedRootTable != null
+              ? 'Loaded BFBS tables (${tableSchemas.length}). Auto-selected root table: $detectedRootTable.'
+              : 'Loaded BFBS tables (${tableSchemas.length}) with semantic field names.')
+          : aliases.isNotEmpty
+              ? 'Loaded FlatBuffers field aliases (${aliases.length}).'
+              : 'No FlatBuffers schema metadata found.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load flat schema: $e')),
+      );
+    }
+  }
+
+  _WsFlatSchemaBundle _extractFlatSchemasFromBfbs(
+      Uint8List bytes) {
+    final schemas = <String, _WsFlatObjectSchema>{};
+    if (bytes.lengthInBytes < 8) {
+      return const _WsFlatSchemaBundle(schemas: {});
+    }
+
+    final rootTable = _flatRootTable(bytes);
+    final objectsVector = _flatTableGetVectorStart(bytes, rootTable, 0);
+    if (objectsVector == null) {
+      return const _WsFlatSchemaBundle(schemas: {});
+    }
+
+    String? detectedRootTable;
+    final rootObjectTable = _flatTableGetIndirectTableField(bytes, rootTable, 4);
+    if (rootObjectTable != null) {
+      final rootName = _flatTableGetString(bytes, rootObjectTable, 0);
+      if (rootName != null && rootName.isNotEmpty) {
+        detectedRootTable = rootName;
+      }
+    }
+
+    final objectCount = _flatVectorLength(bytes, objectsVector);
+    final objectNameByIndex = <int, String>{};
+    final objectIsStructByName = <String, bool>{};
+    final objectByteSizeByName = <String, int>{};
+
+    for (var i = 0; i < objectCount; i++) {
+      final objectTable = _flatVectorGetIndirectTable(bytes, objectsVector, i);
+      if (objectTable == null) continue;
+      final objectName = _flatTableGetString(bytes, objectTable, 0);
+      if (objectName == null || objectName.isEmpty) continue;
+      objectNameByIndex[i] = objectName;
+      objectIsStructByName[objectName] =
+          (_flatTableGetUint8(bytes, objectTable, 2) ?? 0) != 0;
+      objectByteSizeByName[objectName] =
+          _flatTableGetInt32(bytes, objectTable, 4) ?? 0;
+    }
+
+    for (var i = 0; i < objectCount; i++) {
+      final objectTable = _flatVectorGetIndirectTable(bytes, objectsVector, i);
+      if (objectTable == null) continue;
+      final objectName = _flatTableGetString(bytes, objectTable, 0);
+      if (objectName == null || objectName.isEmpty) continue;
+
+      final fieldsVector = _flatTableGetVectorStart(bytes, objectTable, 1);
+      final fields = <int, _WsFlatFieldSchema>{};
+      if (fieldsVector != null) {
+        final fieldCount = _flatVectorLength(bytes, fieldsVector);
+        for (var j = 0; j < fieldCount; j++) {
+          final fieldTable = _flatVectorGetIndirectTable(bytes, fieldsVector, j);
+          if (fieldTable == null) continue;
+          final fieldName = _flatTableGetString(bytes, fieldTable, 0);
+          if (fieldName == null || fieldName.isEmpty) continue;
+          final fieldId = _flatTableGetUint16(bytes, fieldTable, 2) ?? j;
+          final fieldOffset = _flatTableGetUint16(bytes, fieldTable, 3);
+          final typeTable = _flatTableGetIndirectTableField(bytes, fieldTable, 1);
+          final baseType =
+              typeTable == null ? _kFlatBaseTypeNone : (_flatTableGetUint8(bytes, typeTable, 0) ?? _kFlatBaseTypeNone);
+          final elementType =
+              typeTable == null ? _kFlatBaseTypeNone : (_flatTableGetUint8(bytes, typeTable, 1) ?? _kFlatBaseTypeNone);
+          final objectIndex =
+              typeTable == null ? null : _flatTableGetInt32(bytes, typeTable, 2);
+          final objectType =
+              objectIndex == null ? null : objectNameByIndex[objectIndex];
+
+          fields[fieldId] = _WsFlatFieldSchema(
+            name: fieldName,
+            id: fieldId,
+            offset: fieldOffset,
+            baseType: baseType,
+            elementType: elementType,
+            objectType: objectType,
+            structType: objectType == null
+                ? null
+                : objectIsStructByName[objectType],
+          );
+        }
+      }
+      schemas[objectName] = _WsFlatObjectSchema(
+        name: objectName,
+        fields: fields,
+        isStruct: objectIsStructByName[objectName] ?? false,
+        byteSize: objectByteSizeByName[objectName] ?? 0,
+      );
+    }
+
+    return _WsFlatSchemaBundle(
+      schemas: schemas,
+      detectedRootTable: detectedRootTable,
+    );
+  }
+
+  Map<String, Map<int, _WsProtoFieldSchema>> _extractProtoSchemas(
+      $descriptor.FileDescriptorSet descriptorSet) {
+    final schemas = <String, Map<int, _WsProtoFieldSchema>>{};
+
+    void collectFromMessage(
+      String packageName,
+      String parentPath,
+      $descriptor.DescriptorProto message,
+    ) {
+      final simpleName = message.name;
+      if (simpleName.isEmpty) return;
+      final qualified = [
+        if (packageName.isNotEmpty) packageName,
+        if (parentPath.isNotEmpty) parentPath,
+        simpleName,
+      ].join('.');
+
+      final fieldMap = <int, _WsProtoFieldSchema>{};
+      for (final field in message.field) {
+        if (!field.hasNumber()) continue;
+        fieldMap[field.number] = _WsProtoFieldSchema(
+          name: field.name,
+          number: field.number,
+          type: field.type.value,
+          typeName: field.typeName,
+        );
+      }
+      schemas[qualified] = fieldMap;
+
+      final nestedParent = parentPath.isEmpty ? simpleName : '$parentPath.$simpleName';
+      for (final nested in message.nestedType) {
+        collectFromMessage(packageName, nestedParent, nested);
+      }
+    }
+
+    for (final file in descriptorSet.file) {
+      final pkg = file.package;
+      for (final message in file.messageType) {
+        collectFromMessage(pkg, '', message);
+      }
+    }
+
+    return schemas;
+  }
+
   void _dispatchSend(
     WebSocketNotifier notifier, {
     required VoidCallback sendAction,
@@ -851,22 +1567,18 @@ class _EditWebSocketRequestPaneState
 
   String _renderPayload(WebSocketMessage msg) {
     if (_payloadView == _WsPayloadView.raw) {
-      return msg.payload;
+      return _payloadForDisplay(msg);
     }
     if (_payloadView == _WsPayloadView.hex) {
       if (msg.type == 'binary') {
-        try {
-          return _toHex(base64Decode(msg.payload));
-        } catch (_) {
-          return msg.payload;
-        }
+        return _toHex(msg.binaryPayload ?? Uint8List(0));
       }
-      return _toHex(Uint8List.fromList(utf8.encode(msg.payload)));
+      return _toHex(Uint8List.fromList(utf8.encode(msg.textPayload ?? '')));
     }
 
     final normalized = msg.type == 'binary'
-        ? _tryDecodeBinaryAsText(msg.payload)
-        : msg.payload;
+        ? _decodeBinaryOnDemand(msg.binaryPayload ?? Uint8List(0)).display
+        : (msg.textPayload ?? '');
 
     if (_payloadView == _WsPayloadView.json) {
       try {
@@ -886,13 +1598,1015 @@ class _EditWebSocketRequestPaneState
     }
   }
 
-  String _tryDecodeBinaryAsText(String base64Payload) {
-    try {
-      final decoded = base64Decode(base64Payload);
-      return utf8.decode(decoded);
-    } catch (_) {
-      return base64Payload;
+  Map<WebSocketMessage, _WsDecodedPayload> _buildDecodedPayloadsWithGapDetection(
+      List<WebSocketMessage> messages) {
+    final decoded = <WebSocketMessage, _WsDecodedPayload>{};
+    final lastSequenceByStream = <String, int>{};
+    for (final msg in messages) {
+      final parsed = _decodeMessage(msg);
+      if (parsed.sequence != null && parsed.streamKey != null) {
+        final previous = lastSequenceByStream[parsed.streamKey!];
+        if (previous != null && parsed.sequence! > previous + 1) {
+          final gap = parsed.sequence! - previous - 1;
+          decoded[msg] = _WsDecodedPayload(
+            display:
+                '[sequence_gap=$gap, prev=$previous, current=${parsed.sequence}]\n${parsed.display}',
+            sequence: parsed.sequence,
+            streamKey: parsed.streamKey,
+          );
+        } else {
+          decoded[msg] = parsed;
+        }
+        lastSequenceByStream[parsed.streamKey!] = parsed.sequence!;
+      } else {
+        decoded[msg] = parsed;
+      }
     }
+    return decoded;
+  }
+
+  _WsDecodedPayload _decodeMessage(WebSocketMessage msg) {
+    if (msg.type != 'binary') {
+      return _WsDecodedPayload(display: _renderPayload(msg));
+    }
+    return _decodeBinaryOnDemand(msg.binaryPayload ?? Uint8List(0));
+  }
+
+  _WsDecodedPayload _decodeBinaryOnDemand(Uint8List bytes) {
+    if (bytes.isEmpty) {
+      return const _WsDecodedPayload(display: '');
+    }
+
+    try {
+      switch (_binaryDecoder) {
+        case _WsBinaryDecoder.none:
+          return _WsDecodedPayload(display: _toHex(bytes));
+        case _WsBinaryDecoder.utf8:
+          return _WsDecodedPayload(display: utf8.decode(bytes));
+        case _WsBinaryDecoder.protobuf:
+          final wire = _decodeProtoWire(
+            bytes,
+            schemaType: _selectedProtoMessageType,
+          );
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(wire),
+            sequence: _extractSequence(wire),
+            streamKey: _extractStreamKey(wire),
+          );
+        case _WsBinaryDecoder.messagePack:
+          final value = _decodeMessagePack(bytes);
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(value),
+            sequence: _extractSequence(value),
+            streamKey: _extractStreamKey(value),
+          );
+        case _WsBinaryDecoder.flatBuffers:
+          final fb = _decodeFlatBufferTable(bytes);
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(fb),
+            sequence: (fb['sequence'] as num?)?.toInt(),
+            streamKey: fb['stream'] as String?,
+          );
+        case _WsBinaryDecoder.fixedQuote:
+          final event = _decodeFixedQuote(bytes);
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(event.toJson()),
+            sequence: event.sequence,
+            streamKey: 'quote:${event.symbol}',
+          );
+        case _WsBinaryDecoder.fixedTrade:
+          final event = _decodeFixedTrade(bytes);
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(event.toJson()),
+            sequence: event.sequence,
+            streamKey: 'trade:${event.symbol}',
+          );
+        case _WsBinaryDecoder.fixedOrderBook:
+          final event = _decodeFixedOrderBook(bytes);
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(event.toJson()),
+            sequence: event.sequence,
+            streamKey: 'orderbook:${event.symbol}',
+          );
+      }
+    } catch (e) {
+      return _WsDecodedPayload(
+        display: 'Decode error (${_binaryDecoder.name}): $e\n${_toHex(bytes)}',
+      );
+    }
+  }
+
+  Map<String, Object?> _decodeProtoWire(
+    Uint8List bytes, {
+    String? schemaType,
+  }) {
+    final normalizedSchema = _normalizeProtoTypeName(schemaType);
+    final schema = normalizedSchema == null
+        ? null
+        : _protoFieldSchemas[normalizedSchema];
+
+    final values = <String, Object?>{};
+    var index = 0;
+    while (index < bytes.length) {
+      final key = _readVarint(bytes, index);
+      final tag = key.$1;
+      index = key.$2;
+      final field = tag >> 3;
+      final wireType = tag & 0x7;
+      final fieldSchema = schema?[field];
+      final name = fieldSchema?.name ?? 'field_$field';
+      switch (wireType) {
+        case 0:
+          final value = _readVarint(bytes, index);
+          index = value.$2;
+          _appendField(
+            values,
+            name,
+            _decodeProtoScalarVarint(value.$1, fieldSchema),
+          );
+          break;
+        case 1:
+          if (index + 8 > bytes.length) {
+            throw const FormatException('Truncated fixed64');
+          }
+          final raw = ByteData.sublistView(bytes, index, index + 8)
+              .getUint64(0, Endian.little);
+          index += 8;
+          _appendField(
+            values,
+            name,
+            _decodeProtoFixed64(raw, fieldSchema),
+          );
+          break;
+        case 2:
+          final lenInfo = _readVarint(bytes, index);
+          final len = lenInfo.$1;
+          index = lenInfo.$2;
+          if (index + len > bytes.length) {
+            throw const FormatException('Truncated length-delimited');
+          }
+          final chunk = Uint8List.sublistView(bytes, index, index + len);
+          index += len;
+          _appendField(
+            values,
+            name,
+            _decodeProtoLengthDelimited(chunk, fieldSchema),
+          );
+          break;
+        case 5:
+          if (index + 4 > bytes.length) {
+            throw const FormatException('Truncated fixed32');
+          }
+          final raw = ByteData.sublistView(bytes, index, index + 4)
+              .getUint32(0, Endian.little);
+          index += 4;
+          _appendField(
+            values,
+            name,
+            _decodeProtoFixed32(raw, fieldSchema),
+          );
+          break;
+        default:
+          throw FormatException('Unsupported protobuf wire type $wireType');
+      }
+    }
+
+    final seq = _extractSequence(values);
+    final stream = _extractStreamKey(values);
+    return {
+      'protocol': 'protobuf-wire',
+      if (normalizedSchema != null) 'schemaType': normalizedSchema,
+      if (seq != null) 'sequence': seq,
+      if (stream != null && stream.isNotEmpty) 'stream': stream,
+      'fields': values,
+    };
+  }
+
+  void _appendField(Map<String, Object?> map, String key, Object? value) {
+    if (!map.containsKey(key)) {
+      map[key] = value;
+      return;
+    }
+    final existing = map[key];
+    if (existing is List<Object?>) {
+      map[key] = [...existing, value];
+      return;
+    }
+    map[key] = [existing, value];
+  }
+
+  String? _normalizeProtoTypeName(String? name) {
+    if (name == null || name.trim().isEmpty) return null;
+    return name.startsWith('.') ? name.substring(1) : name;
+  }
+
+  Object? _decodeProtoScalarVarint(int raw, _WsProtoFieldSchema? schema) {
+    final type = schema?.type;
+    switch (type) {
+      case 8:
+        return raw != 0;
+      case 17:
+      case 18:
+        return _zigZagDecode(raw);
+      default:
+        return raw;
+    }
+  }
+
+  Object? _decodeProtoFixed64(int raw, _WsProtoFieldSchema? schema) {
+    final type = schema?.type;
+    if (type == 1) {
+      final data = ByteData(8)..setUint64(0, raw, Endian.little);
+      return data.getFloat64(0, Endian.little);
+    }
+    return raw;
+  }
+
+  Object? _decodeProtoFixed32(int raw, _WsProtoFieldSchema? schema) {
+    final type = schema?.type;
+    if (type == 2) {
+      final data = ByteData(4)..setUint32(0, raw, Endian.little);
+      return data.getFloat32(0, Endian.little);
+    }
+    return raw;
+  }
+
+  Object? _decodeProtoLengthDelimited(
+    Uint8List chunk,
+    _WsProtoFieldSchema? schema,
+  ) {
+    final type = schema?.type;
+    if (type == 9) {
+      return utf8.decode(chunk);
+    }
+    if (type == 12) {
+      return _toHex(chunk);
+    }
+    if (type == 11) {
+      final nestedType = _normalizeProtoTypeName(schema?.typeName);
+      final nested = _decodeProtoWire(chunk, schemaType: nestedType);
+      return nested['fields'];
+    }
+    return _bestEffortPayload(chunk);
+  }
+
+  int _zigZagDecode(int value) {
+    return (value >> 1) ^ (-(value & 1));
+  }
+
+  (int, int) _readVarint(Uint8List bytes, int start) {
+    var value = 0;
+    var shift = 0;
+    var index = start;
+    while (index < bytes.length) {
+      final byte = bytes[index++];
+      value |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) == 0) {
+        return (value, index);
+      }
+      shift += 7;
+      if (shift > 63) throw const FormatException('Varint too large');
+    }
+    throw const FormatException('Truncated varint');
+  }
+
+  int _flatRootTable(Uint8List bytes) {
+    if (bytes.lengthInBytes < 4) return 0;
+    final rootOffset = ByteData.sublistView(bytes, 0, 4)
+        .getUint32(0, Endian.little);
+    return rootOffset;
+  }
+
+  int _flatTableVTable(Uint8List bytes, int table) {
+    if (table <= 0 || table + 4 > bytes.lengthInBytes) return -1;
+    final rel = ByteData.sublistView(bytes, table, table + 4)
+        .getInt32(0, Endian.little);
+    return table - rel;
+  }
+
+  int _flatTableFieldOffset(Uint8List bytes, int table, int fieldId) {
+    final vtable = _flatTableVTable(bytes, table);
+    if (vtable < 0 || vtable + 4 > bytes.lengthInBytes) return 0;
+    final vtableLength = ByteData.sublistView(bytes, vtable, vtable + 2)
+        .getUint16(0, Endian.little);
+    final entry = vtable + 4 + (fieldId * 2);
+    if (entry + 2 > vtable + vtableLength || entry + 2 > bytes.lengthInBytes) {
+      return 0;
+    }
+    return ByteData.sublistView(bytes, entry, entry + 2)
+        .getUint16(0, Endian.little);
+  }
+
+  int? _flatTableGetVectorStart(Uint8List bytes, int table, int fieldId) {
+    final fieldOffset = _flatTableFieldOffset(bytes, table, fieldId);
+    if (fieldOffset == 0) return null;
+    final addr = table + fieldOffset;
+    if (addr + 4 > bytes.lengthInBytes) return null;
+    final rel = ByteData.sublistView(bytes, addr, addr + 4)
+        .getUint32(0, Endian.little);
+    final vec = addr + rel;
+    if (vec + 4 > bytes.lengthInBytes) return null;
+    return vec;
+  }
+
+  int _flatVectorLength(Uint8List bytes, int vectorStart) {
+    if (vectorStart + 4 > bytes.lengthInBytes) return 0;
+    return ByteData.sublistView(bytes, vectorStart, vectorStart + 4)
+        .getUint32(0, Endian.little);
+  }
+
+  int? _flatVectorGetIndirectTable(
+    Uint8List bytes,
+    int vectorStart,
+    int index,
+  ) {
+    final length = _flatVectorLength(bytes, vectorStart);
+    if (index < 0 || index >= length) return null;
+    final elemAddr = vectorStart + 4 + (index * 4);
+    if (elemAddr + 4 > bytes.lengthInBytes) return null;
+    final rel = ByteData.sublistView(bytes, elemAddr, elemAddr + 4)
+        .getUint32(0, Endian.little);
+    final table = elemAddr + rel;
+    if (table < 0 || table >= bytes.lengthInBytes) return null;
+    return table;
+  }
+
+  String? _flatTableGetString(Uint8List bytes, int table, int fieldId) {
+    final fieldOffset = _flatTableFieldOffset(bytes, table, fieldId);
+    if (fieldOffset == 0) return null;
+    final addr = table + fieldOffset;
+    if (addr + 4 > bytes.lengthInBytes) return null;
+    final rel = ByteData.sublistView(bytes, addr, addr + 4)
+        .getUint32(0, Endian.little);
+    final str = addr + rel;
+    if (str + 4 > bytes.lengthInBytes) return null;
+    final len = ByteData.sublistView(bytes, str, str + 4)
+        .getUint32(0, Endian.little);
+    final start = str + 4;
+    final end = start + len;
+    if (start < 0 || end > bytes.lengthInBytes) return null;
+    return utf8.decode(bytes.sublist(start, end), allowMalformed: true);
+  }
+
+  int? _flatTableGetUint16(Uint8List bytes, int table, int fieldId) {
+    final fieldOffset = _flatTableFieldOffset(bytes, table, fieldId);
+    if (fieldOffset == 0) return null;
+    final addr = table + fieldOffset;
+    if (addr + 2 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 2)
+        .getUint16(0, Endian.little);
+  }
+
+  int? _flatTableGetUint8(Uint8List bytes, int table, int fieldId) {
+    final fieldOffset = _flatTableFieldOffset(bytes, table, fieldId);
+    if (fieldOffset == 0) return null;
+    final addr = table + fieldOffset;
+    if (addr + 1 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 1).getUint8(0);
+  }
+
+  int? _flatTableGetInt32(Uint8List bytes, int table, int fieldId) {
+    final fieldOffset = _flatTableFieldOffset(bytes, table, fieldId);
+    if (fieldOffset == 0) return null;
+    final addr = table + fieldOffset;
+    if (addr + 4 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 4)
+        .getInt32(0, Endian.little);
+  }
+
+  int? _flatTableGetIndirectTableField(
+    Uint8List bytes,
+    int table,
+    int fieldId,
+  ) {
+    final fieldOffset = _flatTableFieldOffset(bytes, table, fieldId);
+    if (fieldOffset == 0) return null;
+    final addr = table + fieldOffset;
+    return _flatIndirectFromAddress(bytes, addr);
+  }
+
+  int? _flatIndirectFromAddress(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 4 > bytes.lengthInBytes) return null;
+    final rel = ByteData.sublistView(bytes, addr, addr + 4)
+        .getInt32(0, Endian.little);
+    final target = addr + rel;
+    if (target < 0 || target >= bytes.lengthInBytes) return null;
+    return target;
+  }
+
+  int? _flatVectorFromAddress(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 4 > bytes.lengthInBytes) return null;
+    final rel = ByteData.sublistView(bytes, addr, addr + 4)
+        .getInt32(0, Endian.little);
+    final vec = addr + rel;
+    if (vec < 0 || vec + 4 > bytes.lengthInBytes) return null;
+    return vec;
+  }
+
+  bool? _readFlatBool(Uint8List bytes, int addr) {
+    final v = _readFlatUint8(bytes, addr);
+    return v == null ? null : v != 0;
+  }
+
+  int? _readFlatInt8(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 1 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 1).getInt8(0);
+  }
+
+  int? _readFlatUint8(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 1 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 1).getUint8(0);
+  }
+
+  int? _readFlatInt16(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 2 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 2)
+        .getInt16(0, Endian.little);
+  }
+
+  int? _readFlatUint16(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 2 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 2)
+        .getUint16(0, Endian.little);
+  }
+
+  int? _readFlatInt32(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 4 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 4)
+        .getInt32(0, Endian.little);
+  }
+
+  int? _readFlatUint32(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 4 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 4)
+        .getUint32(0, Endian.little);
+  }
+
+  int? _readFlatInt64(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 8 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 8)
+        .getInt64(0, Endian.little);
+  }
+
+  int? _readFlatUint64(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 8 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 8)
+        .getUint64(0, Endian.little);
+  }
+
+  double? _readFlatFloat32(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 4 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 4)
+        .getFloat32(0, Endian.little);
+  }
+
+  double? _readFlatFloat64(Uint8List bytes, int addr) {
+    if (addr < 0 || addr + 8 > bytes.lengthInBytes) return null;
+    return ByteData.sublistView(bytes, addr, addr + 8)
+        .getFloat64(0, Endian.little);
+  }
+
+  String? _readFlatStringFromField(Uint8List bytes, int addr) {
+    return _readFlatStringFromAddress(bytes, addr);
+  }
+
+  String? _readFlatStringFromAddress(Uint8List bytes, int addr) {
+    final str = _flatIndirectFromAddress(bytes, addr);
+    if (str == null || str + 4 > bytes.lengthInBytes) return null;
+    final len = ByteData.sublistView(bytes, str, str + 4)
+        .getUint32(0, Endian.little);
+    final start = str + 4;
+    final end = start + len;
+    if (start < 0 || end > bytes.lengthInBytes) return null;
+    return utf8.decode(bytes.sublist(start, end), allowMalformed: true);
+  }
+
+  Object? _decodeMessagePack(Uint8List bytes) {
+    final result = _decodeMessagePackValue(bytes, 0);
+    return result.$1;
+  }
+
+  (Object?, int) _decodeMessagePackValue(Uint8List bytes, int offset) {
+    if (offset >= bytes.length) throw const FormatException('Unexpected EOF');
+    final c = bytes[offset];
+    if (c <= 0x7f) return (c, offset + 1);
+    if (c >= 0xe0) return (c - 256, offset + 1);
+    if ((c & 0xf0) == 0x90) {
+      final size = c & 0x0f;
+      var idx = offset + 1;
+      final list = <Object?>[];
+      for (var i = 0; i < size; i++) {
+        final next = _decodeMessagePackValue(bytes, idx);
+        list.add(next.$1);
+        idx = next.$2;
+      }
+      return (list, idx);
+    }
+    if ((c & 0xf0) == 0x80) {
+      final size = c & 0x0f;
+      var idx = offset + 1;
+      final map = <String, Object?>{};
+      for (var i = 0; i < size; i++) {
+        final k = _decodeMessagePackValue(bytes, idx);
+        idx = k.$2;
+        final v = _decodeMessagePackValue(bytes, idx);
+        idx = v.$2;
+        map[k.$1.toString()] = v.$1;
+      }
+      return (map, idx);
+    }
+    if ((c & 0xe0) == 0xa0) {
+      final len = c & 0x1f;
+      final s = utf8.decode(bytes.sublist(offset + 1, offset + 1 + len));
+      return (s, offset + 1 + len);
+    }
+
+    switch (c) {
+      case 0xc0:
+        return (null, offset + 1);
+      case 0xc2:
+        return (false, offset + 1);
+      case 0xc3:
+        return (true, offset + 1);
+      case 0xcc:
+        return (bytes[offset + 1], offset + 2);
+      case 0xcd:
+        return (
+          ByteData.sublistView(bytes, offset + 1, offset + 3)
+              .getUint16(0, Endian.big),
+          offset + 3,
+        );
+      case 0xce:
+        return (
+          ByteData.sublistView(bytes, offset + 1, offset + 5)
+              .getUint32(0, Endian.big),
+          offset + 5,
+        );
+      case 0xd0:
+        return (
+          ByteData.sublistView(bytes, offset + 1, offset + 2)
+              .getInt8(0),
+          offset + 2,
+        );
+      case 0xd1:
+        return (
+          ByteData.sublistView(bytes, offset + 1, offset + 3)
+              .getInt16(0, Endian.big),
+          offset + 3,
+        );
+      case 0xd2:
+        return (
+          ByteData.sublistView(bytes, offset + 1, offset + 5)
+              .getInt32(0, Endian.big),
+          offset + 5,
+        );
+      case 0xcb:
+        return (
+          ByteData.sublistView(bytes, offset + 1, offset + 9)
+              .getFloat64(0, Endian.big),
+          offset + 9,
+        );
+      case 0xda:
+        final len = ByteData.sublistView(bytes, offset + 1, offset + 3)
+            .getUint16(0, Endian.big);
+        final s = utf8.decode(bytes.sublist(offset + 3, offset + 3 + len));
+        return (s, offset + 3 + len);
+      case 0xdc:
+        final size = ByteData.sublistView(bytes, offset + 1, offset + 3)
+            .getUint16(0, Endian.big);
+        var idx = offset + 3;
+        final list = <Object?>[];
+        for (var i = 0; i < size; i++) {
+          final next = _decodeMessagePackValue(bytes, idx);
+          list.add(next.$1);
+          idx = next.$2;
+        }
+        return (list, idx);
+      case 0xde:
+        final size = ByteData.sublistView(bytes, offset + 1, offset + 3)
+            .getUint16(0, Endian.big);
+        var idx = offset + 3;
+        final map = <String, Object?>{};
+        for (var i = 0; i < size; i++) {
+          final k = _decodeMessagePackValue(bytes, idx);
+          idx = k.$2;
+          final v = _decodeMessagePackValue(bytes, idx);
+          idx = v.$2;
+          map[k.$1.toString()] = v.$1;
+        }
+        return (map, idx);
+      default:
+        throw FormatException('Unsupported MessagePack token 0x${c.toRadixString(16)}');
+    }
+  }
+
+  Map<String, Object?> _decodeFlatBufferTable(Uint8List bytes) {
+    if (bytes.lengthInBytes < 8) {
+      throw const FormatException('FlatBuffer payload too short');
+    }
+    final rootOffset = ByteData.sublistView(bytes, 0, 4).getUint32(0, Endian.little);
+    if (rootOffset >= bytes.lengthInBytes) {
+      throw const FormatException('Invalid FlatBuffer root offset');
+    }
+    final tablePos = rootOffset;
+    final vtableOffset = ByteData.sublistView(bytes, tablePos, tablePos + 4)
+        .getInt32(0, Endian.little);
+    final vtablePos = tablePos - vtableOffset;
+    if (vtablePos < 0 || vtablePos + 4 > bytes.lengthInBytes) {
+      throw const FormatException('Invalid FlatBuffer vtable offset');
+    }
+
+    final view = ByteData.sublistView(bytes);
+    final vtableSize = view.getUint16(vtablePos, Endian.little);
+    final objectSize = view.getUint16(vtablePos + 2, Endian.little);
+    final selectedTableSchema = _selectedFlatTableType == null
+      ? null
+      : _flatTableSchemas[_selectedFlatTableType!];
+    final fields = selectedTableSchema == null
+        ? _decodeFlatTableStructurally(bytes, tablePos, vtablePos)
+        : _decodeFlatTableWithSchema(
+            bytes,
+            tablePos,
+            selectedTableSchema,
+          );
+
+    final sequence = _extractSequence(fields);
+    final stream = _extractStreamKey(fields);
+
+    return {
+      'protocol': 'flatbuffers-table',
+      if (_selectedFlatTableType != null) 'schemaType': _selectedFlatTableType,
+      'rootOffset': rootOffset,
+      'tableOffset': tablePos,
+      'vtableOffset': vtablePos,
+      'vtableSize': vtableSize,
+      'objectSize': objectSize,
+      'fields': fields,
+      if (sequence != null) 'sequence': sequence,
+      if (stream != null && stream.isNotEmpty) 'stream': stream,
+    };
+  }
+
+  Map<String, Object?> _decodeFlatTableStructurally(
+    Uint8List bytes,
+    int tablePos,
+    int vtablePos,
+  ) {
+    final view = ByteData.sublistView(bytes);
+    final vtableSize = view.getUint16(vtablePos, Endian.little);
+    final fieldCount = ((vtableSize - 4) ~/ 2).clamp(0, 64);
+    final fields = <String, Object?>{};
+    for (var i = 0; i < fieldCount; i++) {
+      final offsetInTable = view.getUint16(vtablePos + 4 + (i * 2), Endian.little);
+      if (offsetInTable == 0) continue;
+      final fieldPos = tablePos + offsetInTable;
+      final baseName = _flatBufferFieldAliases[i] ?? 'field_$i';
+      if (fieldPos + 8 <= bytes.lengthInBytes) {
+        fields['$baseName.u64'] = view.getUint64(fieldPos, Endian.little);
+        fields['$baseName.f64'] = view.getFloat64(fieldPos, Endian.little);
+      } else if (fieldPos + 4 <= bytes.lengthInBytes) {
+        fields['$baseName.u32'] = view.getUint32(fieldPos, Endian.little);
+      }
+    }
+    return fields;
+  }
+
+  Map<String, Object?> _decodeFlatTableWithSchema(
+    Uint8List bytes,
+    int tablePos,
+    _WsFlatObjectSchema schema,
+  ) {
+    final fields = <String, Object?>{};
+    final entries = schema.fields.entries.toList(growable: false)
+      ..sort((a, b) => a.key.compareTo(b.key));
+    for (final entry in entries) {
+      final field = entry.value;
+      final value = _decodeFlatFieldValue(bytes, tablePos, field);
+      if (value != null) {
+        fields[field.name] = value;
+      }
+    }
+    return fields;
+  }
+
+  Object? _decodeFlatFieldValue(
+    Uint8List bytes,
+    int tablePos,
+    _WsFlatFieldSchema field,
+  ) {
+    final fieldOffset = _flatTableFieldOffset(bytes, tablePos, field.id);
+    if (fieldOffset == 0) {
+      return null;
+    }
+    final addr = tablePos + fieldOffset;
+    if (addr < 0 || addr >= bytes.lengthInBytes) {
+      return null;
+    }
+
+    switch (field.baseType) {
+      case _kFlatBaseTypeBool:
+        return _readFlatBool(bytes, addr);
+      case _kFlatBaseTypeByte:
+        return _readFlatInt8(bytes, addr);
+      case _kFlatBaseTypeUByte:
+      case _kFlatBaseTypeUType:
+        return _readFlatUint8(bytes, addr);
+      case _kFlatBaseTypeShort:
+        return _readFlatInt16(bytes, addr);
+      case _kFlatBaseTypeUShort:
+        return _readFlatUint16(bytes, addr);
+      case _kFlatBaseTypeInt:
+        return _readFlatInt32(bytes, addr);
+      case _kFlatBaseTypeUInt:
+        return _readFlatUint32(bytes, addr);
+      case _kFlatBaseTypeLong:
+        return _readFlatInt64(bytes, addr);
+      case _kFlatBaseTypeULong:
+        return _readFlatUint64(bytes, addr);
+      case _kFlatBaseTypeFloat:
+        return _readFlatFloat32(bytes, addr);
+      case _kFlatBaseTypeDouble:
+        return _readFlatFloat64(bytes, addr);
+      case _kFlatBaseTypeString:
+        return _readFlatStringFromField(bytes, addr);
+      case _kFlatBaseTypeVector:
+        return _decodeFlatVector(bytes, addr, field);
+      case _kFlatBaseTypeObj:
+        return _decodeFlatObjectFromField(bytes, addr, field);
+      case _kFlatBaseTypeUnion:
+        return {'union': _readFlatUint8(bytes, addr)};
+      default:
+        return null;
+    }
+  }
+
+  Object? _decodeFlatObjectFromField(
+    Uint8List bytes,
+    int addr,
+    _WsFlatFieldSchema field,
+  ) {
+    final objectType = field.objectType;
+    if (objectType == null) {
+      return null;
+    }
+    final nestedSchema = _flatTableSchemas[objectType];
+    if (nestedSchema == null) {
+      final targetTable = _flatIndirectFromAddress(bytes, addr);
+      return targetTable == null ? null : {'table': targetTable};
+    }
+    if (nestedSchema.isStruct) {
+      return _decodeFlatStructWithSchema(bytes, addr, nestedSchema);
+    }
+    final targetTable = _flatIndirectFromAddress(bytes, addr);
+    if (targetTable == null) {
+      return null;
+    }
+    return _decodeFlatTableWithSchema(bytes, targetTable, nestedSchema);
+  }
+
+  Object? _decodeFlatVector(
+    Uint8List bytes,
+    int addr,
+    _WsFlatFieldSchema field,
+  ) {
+    final vec = _flatVectorFromAddress(bytes, addr);
+    if (vec == null) {
+      return null;
+    }
+    final length = _flatVectorLength(bytes, vec);
+    final start = vec + 4;
+    final element = field.elementType;
+    final out = <Object?>[];
+    for (var i = 0; i < length; i++) {
+      switch (element) {
+        case _kFlatBaseTypeBool:
+          out.add(_readFlatBool(bytes, start + i));
+          break;
+        case _kFlatBaseTypeByte:
+          out.add(_readFlatInt8(bytes, start + i));
+          break;
+        case _kFlatBaseTypeUByte:
+        case _kFlatBaseTypeUType:
+          out.add(_readFlatUint8(bytes, start + i));
+          break;
+        case _kFlatBaseTypeShort:
+          out.add(_readFlatInt16(bytes, start + (i * 2)));
+          break;
+        case _kFlatBaseTypeUShort:
+          out.add(_readFlatUint16(bytes, start + (i * 2)));
+          break;
+        case _kFlatBaseTypeInt:
+          out.add(_readFlatInt32(bytes, start + (i * 4)));
+          break;
+        case _kFlatBaseTypeUInt:
+          out.add(_readFlatUint32(bytes, start + (i * 4)));
+          break;
+        case _kFlatBaseTypeFloat:
+          out.add(_readFlatFloat32(bytes, start + (i * 4)));
+          break;
+        case _kFlatBaseTypeLong:
+          out.add(_readFlatInt64(bytes, start + (i * 8)));
+          break;
+        case _kFlatBaseTypeULong:
+          out.add(_readFlatUint64(bytes, start + (i * 8)));
+          break;
+        case _kFlatBaseTypeDouble:
+          out.add(_readFlatFloat64(bytes, start + (i * 8)));
+          break;
+        case _kFlatBaseTypeString:
+          out.add(_readFlatStringFromAddress(bytes, start + (i * 4)));
+          break;
+        case _kFlatBaseTypeObj:
+          final objName = field.objectType;
+          final nested = objName == null ? null : _flatTableSchemas[objName];
+          if (nested == null) {
+            out.add(_flatIndirectFromAddress(bytes, start + (i * 4)));
+          } else if (nested.isStruct) {
+            final structSize = nested.byteSize <= 0 ? 1 : nested.byteSize;
+            out.add(_decodeFlatStructWithSchema(bytes, start + (i * structSize), nested));
+          } else {
+            final table = _flatIndirectFromAddress(bytes, start + (i * 4));
+            if (table == null) {
+              out.add(null);
+            } else {
+              out.add(_decodeFlatTableWithSchema(bytes, table, nested));
+            }
+          }
+          break;
+        default:
+          out.add(null);
+          break;
+      }
+    }
+    return out;
+  }
+
+  Map<String, Object?> _decodeFlatStructWithSchema(
+    Uint8List bytes,
+    int structPos,
+    _WsFlatObjectSchema schema,
+  ) {
+    final fields = <String, Object?>{};
+    final entries = schema.fields.entries.toList(growable: false)
+      ..sort((a, b) => a.key.compareTo(b.key));
+    for (final entry in entries) {
+      final field = entry.value;
+      final value = _decodeFlatStructFieldValue(bytes, structPos, field);
+      if (value != null) {
+        fields[field.name] = value;
+      }
+    }
+    return fields;
+  }
+
+  Object? _decodeFlatStructFieldValue(
+    Uint8List bytes,
+    int structPos,
+    _WsFlatFieldSchema field,
+  ) {
+    final addr = structPos + (field.offset ?? field.id);
+    switch (field.baseType) {
+      case _kFlatBaseTypeBool:
+        return _readFlatBool(bytes, addr);
+      case _kFlatBaseTypeByte:
+        return _readFlatInt8(bytes, addr);
+      case _kFlatBaseTypeUByte:
+      case _kFlatBaseTypeUType:
+        return _readFlatUint8(bytes, addr);
+      case _kFlatBaseTypeShort:
+        return _readFlatInt16(bytes, addr);
+      case _kFlatBaseTypeUShort:
+        return _readFlatUint16(bytes, addr);
+      case _kFlatBaseTypeInt:
+        return _readFlatInt32(bytes, addr);
+      case _kFlatBaseTypeUInt:
+        return _readFlatUint32(bytes, addr);
+      case _kFlatBaseTypeLong:
+        return _readFlatInt64(bytes, addr);
+      case _kFlatBaseTypeULong:
+        return _readFlatUint64(bytes, addr);
+      case _kFlatBaseTypeFloat:
+        return _readFlatFloat32(bytes, addr);
+      case _kFlatBaseTypeDouble:
+        return _readFlatFloat64(bytes, addr);
+      default:
+        return null;
+    }
+  }
+
+  _WsQuoteEvent _decodeFixedQuote(Uint8List bytes) {
+    if (bytes.lengthInBytes < 56) {
+      throw FormatException('Quote frame too short: ${bytes.lengthInBytes} < 56');
+    }
+    final view = ByteData.sublistView(bytes, 0, 56);
+    return _WsQuoteEvent(
+      sequence: view.getUint64(0, Endian.little),
+      timestampMicros: view.getUint64(8, Endian.little),
+      symbol: _decodeAsciiSymbol(bytes.sublist(16, 24)),
+      bid: view.getFloat64(24, Endian.little),
+      ask: view.getFloat64(32, Endian.little),
+      bidSize: view.getFloat64(40, Endian.little),
+      askSize: view.getFloat64(48, Endian.little),
+    );
+  }
+
+  _WsTradeEvent _decodeFixedTrade(Uint8List bytes) {
+    if (bytes.lengthInBytes < 41) {
+      throw FormatException('Trade frame too short: ${bytes.lengthInBytes} < 41');
+    }
+    final view = ByteData.sublistView(bytes, 0, 41);
+    return _WsTradeEvent(
+      sequence: view.getUint64(0, Endian.little),
+      timestampMicros: view.getUint64(8, Endian.little),
+      symbol: _decodeAsciiSymbol(bytes.sublist(16, 24)),
+      price: view.getFloat64(24, Endian.little),
+      size: view.getFloat64(32, Endian.little),
+      side: (view.getUint8(40) == 0) ? 'buy' : 'sell',
+    );
+  }
+
+  _WsOrderBookEvent _decodeFixedOrderBook(Uint8List bytes) {
+    if (bytes.lengthInBytes < 56) {
+      throw FormatException('OrderBook frame too short: ${bytes.lengthInBytes} < 56');
+    }
+    final view = ByteData.sublistView(bytes, 0, 56);
+    return _WsOrderBookEvent(
+      sequence: view.getUint64(0, Endian.little),
+      timestampMicros: view.getUint64(8, Endian.little),
+      symbol: _decodeAsciiSymbol(bytes.sublist(16, 24)),
+      bidPrice: view.getFloat64(24, Endian.little),
+      bidSize: view.getFloat64(32, Endian.little),
+      askPrice: view.getFloat64(40, Endian.little),
+      askSize: view.getFloat64(48, Endian.little),
+    );
+  }
+
+  String _decodeAsciiSymbol(Uint8List bytes) {
+    final chars = bytes.takeWhile((b) => b != 0).toList(growable: false);
+    return ascii.decode(chars).trim();
+  }
+
+  Object _bestEffortPayload(Uint8List bytes) {
+    try {
+      final text = utf8.decode(bytes);
+      if (text.isEmpty) return '';
+      try {
+        return jsonDecode(text);
+      } catch (_) {
+        return text;
+      }
+    } catch (_) {
+      return _toHex(bytes);
+    }
+  }
+
+  int? _extractSequence(Object? value) {
+    if (value is Map) {
+      final direct = value['sequence'];
+      if (direct is num) return direct.toInt();
+      final seq = value['seq'];
+      if (seq is num) return seq.toInt();
+      for (final entry in value.entries) {
+        final key = entry.key.toString().toLowerCase();
+        if (key.contains('sequence') || key == 'seq') {
+          final v = entry.value;
+          if (v is num) return v.toInt();
+          if (v is String) {
+            final parsed = int.tryParse(v);
+            if (parsed != null) return parsed;
+          }
+        }
+      }
+      final nested = value['fields'];
+      if (nested is Map) {
+        return _extractSequence(nested);
+      }
+    }
+    return null;
+  }
+
+  String? _extractStreamKey(Object? value) {
+    if (value is Map) {
+      final s = value['symbol'] ?? value['stream'] ?? value['channel'];
+      if (s != null) return s.toString();
+      for (final entry in value.entries) {
+        final key = entry.key.toString().toLowerCase();
+        if (key.contains('symbol') ||
+            key.contains('instrument') ||
+            key.contains('stream') ||
+            key.contains('channel')) {
+          final v = entry.value;
+          if (v != null && v.toString().isNotEmpty) {
+            return v.toString();
+          }
+        }
+      }
+      final nested = value['fields'];
+      if (nested is Map) {
+        return _extractStreamKey(nested);
+      }
+    }
+    return null;
   }
 
   String _toHex(Uint8List data) {
@@ -908,6 +2622,39 @@ class _EditWebSocketRequestPaneState
 
   bool sessionCanSend(WebSocketSessionState session) {
     return session.connectionState == WebSocketConnectionState.connected;
+  }
+
+  String _payloadForDisplay(WebSocketMessage msg) {
+    if (msg.type == 'binary') {
+      final bytes = msg.binaryPayload;
+      if (bytes == null) return '';
+      return _toHex(bytes);
+    }
+    return msg.textPayload ?? '';
+  }
+
+  String _payloadForComposer(WebSocketMessage msg) {
+    if (msg.type == 'binary') {
+      final bytes = msg.binaryPayload;
+      return bytes == null ? '' : base64Encode(bytes);
+    }
+    return msg.textPayload ?? '';
+  }
+
+  bool _samePayload(WebSocketMessage a, WebSocketMessage b) {
+    if (a.type != b.type) return false;
+    if (a.type == 'binary') {
+      final ab = a.binaryPayload;
+      final bb = b.binaryPayload;
+      if (ab == null || bb == null || ab.lengthInBytes != bb.lengthInBytes) {
+        return false;
+      }
+      for (var i = 0; i < ab.lengthInBytes; i++) {
+        if (ab[i] != bb[i]) return false;
+      }
+      return true;
+    }
+    return (a.textPayload ?? '') == (b.textPayload ?? '');
   }
 }
 
@@ -970,7 +2717,7 @@ class _StatsStrip extends StatelessWidget {
         ? 0
         : DateTime.now().difference(session.connectedAt!).inSeconds;
     final totalBytes = session.messages
-        .map((m) => m.sizeBytes ?? m.payload.length)
+      .map((m) => m.sizeBytes ?? m.binaryPayload?.lengthInBytes ?? (m.textPayload ?? '').length)
         .fold<int>(0, (a, b) => a + b);
     final msgRate = durationSecs <= 0
         ? '--'
@@ -980,7 +2727,7 @@ class _StatsStrip extends StatelessWidget {
         : '${(totalBytes / durationSecs).toStringAsFixed(1)} B/s';
     final spike = session.messages.isEmpty
         ? '--'
-        : '${session.messages.map((m) => m.sizeBytes ?? m.payload.length).reduce((a, b) => a > b ? a : b)} B';
+      : '${session.messages.map((m) => m.sizeBytes ?? m.binaryPayload?.lengthInBytes ?? (m.textPayload ?? '').length).reduce((a, b) => a > b ? a : b)} B';
     final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
@@ -1164,6 +2911,8 @@ class _MessageRow extends StatefulWidget {
     required this.index,
     required this.repeatCount,
     required this.renderedPayload,
+    required this.sequence,
+    required this.streamKey,
     required this.jsonError,
     required this.onResend,
     required this.onCopy,
@@ -1173,6 +2922,8 @@ class _MessageRow extends StatefulWidget {
   final int index;
   final int repeatCount;
   final String renderedPayload;
+  final int? sequence;
+  final String? streamKey;
   final String? jsonError;
   final VoidCallback onResend;
   final VoidCallback onCopy;
@@ -1183,6 +2934,26 @@ class _MessageRow extends StatefulWidget {
 }
 
 class _MessageRowState extends State<_MessageRow> {
+  int _messageBytesLength(WebSocketMessage msg) {
+    if (msg.sizeBytes != null) return msg.sizeBytes!;
+    if (msg.binaryPayload != null) return msg.binaryPayload!.lengthInBytes;
+    return (msg.textPayload ?? '').length;
+  }
+
+  String _rawPayloadForSection(WebSocketMessage msg) {
+    if (msg.type == 'binary') {
+      final bytes = msg.binaryPayload;
+      if (bytes == null) return '';
+      final b = StringBuffer();
+      for (var i = 0; i < bytes.lengthInBytes; i++) {
+        if (i > 0) b.write(' ');
+        b.write(bytes[i].toRadixString(16).padLeft(2, '0'));
+      }
+      return b.toString();
+    }
+    return msg.textPayload ?? '';
+  }
+
   @override
   Widget build(BuildContext context) {
     final msg = widget.message;
@@ -1252,6 +3023,15 @@ class _MessageRowState extends State<_MessageRow> {
             ),
             const SizedBox(width: 8),
             Text(msg.type.toUpperCase(), style: Theme.of(context).textTheme.labelSmall),
+            if (widget.streamKey != null) ...[
+              const SizedBox(width: 8),
+              Text(widget.streamKey!, style: Theme.of(context).textTheme.labelSmall),
+            ],
+            if (widget.sequence != null) ...[
+              const SizedBox(width: 8),
+              Text('seq:${widget.sequence}',
+                  style: Theme.of(context).textTheme.labelSmall),
+            ],
             const Spacer(),
             Text(
               _formatTime(msg.timestamp),
@@ -1259,7 +3039,7 @@ class _MessageRowState extends State<_MessageRow> {
             ),
             const SizedBox(width: 8),
             Text(
-              '${msg.sizeBytes ?? msg.payload.length} B',
+              '${_messageBytesLength(msg)} B',
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ],
@@ -1306,10 +3086,10 @@ class _MessageRowState extends State<_MessageRow> {
             'Direction: ${isSent ? 'Sent' : 'Received'}\n'
                 'Type: ${msg.type}\n'
                 'Timestamp: ${msg.timestamp.toIso8601String()}\n'
-                'Size: ${msg.sizeBytes ?? msg.payload.length} B',
+                'Size: ${_messageBytesLength(msg)} B',
           ),
           const SizedBox(height: 6),
-          _section(context, 'Raw payload', msg.payload),
+              _section(context, 'Raw payload', _rawPayloadForSection(msg)),
           const SizedBox(height: 6),
           _section(
             context,

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:better_networking/better_networking.dart';
@@ -142,7 +141,7 @@ class WebSocketNotifier extends StateNotifier<WebSocketSessionState> {
     try {
       _service.sendMessage(payload);
       final msg = WebSocketMessage(
-        payload: payload,
+        textPayload: payload,
         isSent: true,
         timestamp: DateTime.now(),
         type: 'text',
@@ -160,7 +159,7 @@ class WebSocketNotifier extends StateNotifier<WebSocketSessionState> {
     try {
       _service.sendBinaryMessage(bytes);
       final msg = WebSocketMessage(
-        payload: base64Encode(bytes),
+        binaryPayload: bytes,
         isSent: true,
         timestamp: DateTime.now(),
         type: 'binary',
@@ -201,7 +200,7 @@ class WebSocketNotifier extends StateNotifier<WebSocketSessionState> {
 
   void _appendErrorMessage(String error) {
     final next = WebSocketMessage(
-      payload: error,
+      textPayload: error,
       isSent: false,
       timestamp: DateTime.now(),
       type: 'error',
@@ -212,7 +211,7 @@ class WebSocketNotifier extends StateNotifier<WebSocketSessionState> {
 
   void _appendSystemMessage(String text) {
     final next = WebSocketMessage(
-      payload: text,
+      textPayload: text,
       isSent: false,
       timestamp: DateTime.now(),
       type: 'system',
