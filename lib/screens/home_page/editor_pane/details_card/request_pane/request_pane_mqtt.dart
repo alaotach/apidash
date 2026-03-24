@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:math';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,8 +8,27 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:apidash/providers/providers.dart';
 import 'package:better_networking/better_networking.dart';
 import 'package:apidash/providers/mqtt_providers.dart';
+import 'package:apidash/utils/file_utils.dart';
 
 enum _MqttStreamTypeFilter { all, sent, received }
+
+class _MqttReplayEntry {
+  const _MqttReplayEntry({
+    required this.topic,
+    required this.payload,
+    required this.qos,
+    required this.retain,
+    required this.isSent,
+    required this.timestamp,
+  });
+
+  final String topic;
+  final String payload;
+  final int qos;
+  final bool retain;
+  final bool isSent;
+  final DateTime timestamp;
+}
 
 class EditMqttRequestPane extends ConsumerStatefulWidget {
   const EditMqttRequestPane({super.key});
@@ -39,6 +60,7 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
   bool _useTls = false;
   MqttProtocolVersion _protocolVersion = MqttProtocolVersion.v311;
   String? _selectedTopicFilter;
+  bool _showAdvancedTools = false;
   bool _showConnectionDetails = true;
   bool _isLeftCollapsed = false;
   bool _isPublishCollapsed = false;
@@ -48,9 +70,19 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
   bool _leftDividerHovered = false;
   bool _centerDividerHovered = false;
   final _streamSearchCtrl = TextEditingController();
+  final _replayJitterCtrl = TextEditingController(text: '0');
+  final _replaySeedCtrl = TextEditingController(text: '42');
   _MqttStreamTypeFilter _streamTypeFilter = _MqttStreamTypeFilter.all;
   String? _selectedPayloadTemplate;
   bool _isHydratingDraft = false;
+  final List<_MqttReplayEntry> _replayEntries = [];
+  bool _replaySentOnly = true;
+  bool _isReplayRunning = false;
+  bool _isReplayPaused = false;
+  double _replaySpeed = 1.0;
+  int _replayProgressIndex = 0;
+  int _replayProgressTotal = 0;
+  int _replayRunToken = 0;
 
   static const Map<String, String> _payloadTemplates = {
     'JSON object': '{\n  "device": "sensor-01",\n  "value": 42\n}',
@@ -75,6 +107,7 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
 
   @override
   void dispose() {
+    _stopReplay(silent: true);
     _hostCtrl.removeListener(_onConnectionDraftFieldChanged);
     _portCtrl.removeListener(_onConnectionDraftFieldChanged);
     _clientIdCtrl.removeListener(_onConnectionDraftFieldChanged);
@@ -89,6 +122,8 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
     _pubPayloadCtrl.dispose();
     _subTopicCtrl.dispose();
     _streamSearchCtrl.dispose();
+    _replayJitterCtrl.dispose();
+    _replaySeedCtrl.dispose();
     super.dispose();
   }
 
@@ -584,6 +619,21 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
                                                     label: const Text(
                                                         'Clear filter'),
                                                   );
+                                        final advancedButton = TextButton.icon(
+                                          onPressed: () {
+                                            setState(() {
+                                              _showAdvancedTools =
+                                                  !_showAdvancedTools;
+                                            });
+                                          },
+                                          icon: const Icon(
+                                            Icons.tune_rounded,
+                                            size: 16,
+                                          ),
+                                          label: Text(_showAdvancedTools
+                                              ? 'Hide advanced'
+                                              : 'Advanced'),
+                                        );
 
                                         if (compact) {
                                           return Column(
@@ -601,6 +651,11 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
                                                   child: clearButton,
                                                 ),
                                               ],
+                                              const SizedBox(height: 6),
+                                              Align(
+                                                alignment: Alignment.centerLeft,
+                                                child: advancedButton,
+                                              ),
                                             ],
                                           );
                                         }
@@ -614,11 +669,183 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
                                               const SizedBox(width: 8),
                                               clearButton,
                                             ],
+                                            const SizedBox(width: 8),
+                                            advancedButton,
                                           ],
                                         );
                                       },
                                     ),
                                   ),
+                                  if (_showAdvancedTools)
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .surfaceContainerHighest
+                                              .withAlpha(130),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Replay entries: ${_replayEntries.length}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelSmall,
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Wrap(
+                                              spacing: 8,
+                                              runSpacing: 8,
+                                              children: [
+                                                OutlinedButton.icon(
+                                                  onPressed:
+                                                      _exportMqttSessionJsonl,
+                                                  icon: const Icon(
+                                                    Icons.download_rounded,
+                                                    size: 16,
+                                                  ),
+                                                  label:
+                                                      const Text('Export JSONL'),
+                                                ),
+                                                OutlinedButton.icon(
+                                                  onPressed:
+                                                      _importMqttSessionJsonl,
+                                                  icon: const Icon(
+                                                    Icons.upload_file_rounded,
+                                                    size: 16,
+                                                  ),
+                                                  label:
+                                                      const Text('Import JSONL'),
+                                                ),
+                                                OutlinedButton.icon(
+                                                  onPressed: session.isConnected &&
+                                                          !_isReplayRunning &&
+                                                          _replayEntries
+                                                              .isNotEmpty
+                                                      ? () => _startReplay(
+                                                          notifier)
+                                                      : null,
+                                                  icon: const Icon(
+                                                    Icons.play_arrow_rounded,
+                                                    size: 16,
+                                                  ),
+                                                  label: Text(
+                                                    'Replay (${_replayEntries.length})',
+                                                  ),
+                                                ),
+                                                OutlinedButton.icon(
+                                                  onPressed: _isReplayRunning
+                                                      ? _toggleReplayPause
+                                                      : null,
+                                                  icon: Icon(
+                                                    _isReplayPaused
+                                                        ? Icons
+                                                              .play_circle_outline_rounded
+                                                        : Icons
+                                                              .pause_circle_outline_rounded,
+                                                  ),
+                                                  label: Text(
+                                                    _isReplayPaused
+                                                        ? 'Resume'
+                                                        : 'Pause',
+                                                  ),
+                                                ),
+                                                OutlinedButton.icon(
+                                                  onPressed: _isReplayRunning
+                                                      ? _stopReplay
+                                                      : null,
+                                                  icon: const Icon(
+                                                    Icons.stop_circle_outlined,
+                                                    size: 16,
+                                                  ),
+                                                  label: const Text('Stop'),
+                                                ),
+                                                FilterChip(
+                                                  selected: _replaySentOnly,
+                                                  onSelected: (v) {
+                                                    setState(() =>
+                                                        _replaySentOnly = v);
+                                                  },
+                                                  label: const Text(
+                                                      'Replay sent only'),
+                                                ),
+                                              ],
+                                            ),
+                                            if (_replayEntries.isNotEmpty) ...[
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                'Replay progress: $_replayProgressIndex/$_replayProgressTotal',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .labelSmall,
+                                              ),
+                                              Wrap(
+                                                spacing: 8,
+                                                runSpacing: 8,
+                                                crossAxisAlignment:
+                                                    WrapCrossAlignment.center,
+                                                children: [
+                                                  SizedBox(
+                                                    width: 210,
+                                                    child: Slider(
+                                                      value: _replaySpeed,
+                                                      min: 0.25,
+                                                      max: 4,
+                                                      divisions: 15,
+                                                      onChanged: (v) =>
+                                                          setState(() =>
+                                                              _replaySpeed =
+                                                                  v),
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    '${_replaySpeed.toStringAsFixed(2)}x',
+                                                  ),
+                                                  SizedBox(
+                                                    width: 100,
+                                                    child: TextField(
+                                                      controller:
+                                                          _replayJitterCtrl,
+                                                      keyboardType:
+                                                          TextInputType.number,
+                                                      decoration:
+                                                          const InputDecoration(
+                                                        labelText: 'Jitter ms',
+                                                        isDense: true,
+                                                        border:
+                                                            OutlineInputBorder(),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  SizedBox(
+                                                    width: 80,
+                                                    child: TextField(
+                                                      controller:
+                                                          _replaySeedCtrl,
+                                                      keyboardType:
+                                                          TextInputType.number,
+                                                      decoration:
+                                                          const InputDecoration(
+                                                        labelText: 'Seed',
+                                                        isDense: true,
+                                                        border:
+                                                            OutlineInputBorder(),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                    ),
                                   const Divider(height: 1),
                                   Expanded(
                                     child: _MessageLog(
@@ -888,6 +1115,209 @@ class _EditMqttRequestPaneState extends ConsumerState<EditMqttRequestPane> {
     );
   }
 
+  Future<void> _exportMqttSessionJsonl() async {
+    final session = ref.read(mqttNotifierProvider);
+    if (session.messageLog.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No MQTT messages to export.')),
+      );
+      return;
+    }
+    try {
+      final lines = session.messageLog.map((m) {
+        return jsonEncode({
+          'topic': m.topic,
+          'payload': m.payload,
+          'qos': m.qos,
+          'retain': m.retain,
+          'isSent': m.isSent,
+          'timestamp': m.timestamp.toUtc().toIso8601String(),
+        });
+      }).join('\n');
+      final path = await getFileDownloadpath(
+        'apidash-mqtt-session-${DateTime.now().millisecondsSinceEpoch}',
+        'jsonl',
+      );
+      if (path == null) {
+        throw const FormatException('Unable to resolve downloads directory');
+      }
+      await saveFile(path, Uint8List.fromList(utf8.encode(lines)));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('MQTT session exported to: $path')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to export MQTT session: $e')),
+      );
+    }
+  }
+
+  Future<void> _importMqttSessionJsonl() async {
+    final files = await pickFiles(extensions: const ['jsonl']);
+    if (files.isEmpty) return;
+    final file = files.first;
+    try {
+      final raw = await file.readAsString();
+      final entries = <_MqttReplayEntry>[];
+      for (final line in raw.split('\n')) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        final decoded = jsonDecode(trimmed);
+        if (decoded is! Map<String, dynamic>) continue;
+        entries.add(
+          _MqttReplayEntry(
+            topic: (decoded['topic'] ?? '').toString(),
+            payload: (decoded['payload'] ?? '').toString(),
+            qos: (decoded['qos'] as num?)?.toInt() ?? 0,
+            retain: decoded['retain'] == true,
+            isSent: decoded['isSent'] == true,
+            timestamp: DateTime.tryParse((decoded['timestamp'] ?? '').toString()) ??
+                DateTime.now(),
+          ),
+        );
+      }
+      entries.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      setState(() {
+        _replayEntries
+          ..clear()
+          ..addAll(entries);
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Imported ${entries.length} replay entries.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to import MQTT replay JSONL: $e')),
+      );
+    }
+  }
+
+  void _startReplay(MqttNotifier notifier) {
+    if (_replayEntries.isEmpty) return;
+    final session = ref.read(mqttNotifierProvider);
+    if (!session.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Connect to broker before replaying.')),
+      );
+      return;
+    }
+
+    final entries = _replayEntries
+        .where((e) => !_replaySentOnly || e.isSent)
+        .toList(growable: false)
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    if (entries.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No replay entries match current filter.')),
+      );
+      return;
+    }
+
+    _stopReplay(silent: true);
+    final token = ++_replayRunToken;
+    setState(() {
+      _isReplayRunning = true;
+      _isReplayPaused = false;
+      _replayProgressIndex = 0;
+      _replayProgressTotal = entries.length;
+    });
+
+    final jitterMs = (int.tryParse(_replayJitterCtrl.text.trim()) ?? 0).abs();
+    final seed = int.tryParse(_replaySeedCtrl.text.trim()) ?? 42;
+    final random = Random(seed);
+
+    unawaited(_runReplay(notifier, entries, token, jitterMs, random));
+  }
+
+  void _toggleReplayPause() {
+    if (!_isReplayRunning) return;
+    setState(() => _isReplayPaused = !_isReplayPaused);
+  }
+
+  void _stopReplay({bool silent = false}) {
+    _replayRunToken++;
+    if (!_isReplayRunning && silent) return;
+    setState(() {
+      _isReplayRunning = false;
+      _isReplayPaused = false;
+    });
+    if (!silent) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('MQTT replay stopped.')),
+      );
+    }
+  }
+
+  Future<void> _runReplay(
+    MqttNotifier notifier,
+    List<_MqttReplayEntry> entries,
+    int token,
+    int jitterMs,
+    Random random,
+  ) async {
+    var prev = entries.first.timestamp;
+    for (var i = 0; i < entries.length; i++) {
+      if (token != _replayRunToken) return;
+      final entry = entries[i];
+      final rawDelayMs = i == 0 ? 0 : entry.timestamp.difference(prev).inMilliseconds;
+      prev = entry.timestamp;
+
+      final speedAdjusted = (rawDelayMs / _replaySpeed).round();
+      final jitter = jitterMs == 0 ? 0 : random.nextInt((jitterMs * 2) + 1) - jitterMs;
+      final delayMs = max(0, speedAdjusted + jitter);
+      final proceed = await _waitReplayDelay(delayMs, token);
+      if (!proceed || token != _replayRunToken) return;
+
+      final session = ref.read(mqttNotifierProvider);
+      if (!session.isConnected) {
+        _stopReplay();
+        return;
+      }
+
+      notifier.publish(
+        entry.topic,
+        entry.payload,
+        qos: entry.qos,
+        retain: entry.retain,
+      );
+
+      if (!mounted) return;
+      setState(() => _replayProgressIndex = i + 1);
+    }
+
+    if (!mounted || token != _replayRunToken) return;
+    setState(() {
+      _isReplayRunning = false;
+      _isReplayPaused = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('MQTT replay completed.')),
+    );
+  }
+
+  Future<bool> _waitReplayDelay(int totalMs, int token) async {
+    var remaining = totalMs;
+    while (remaining > 0) {
+      if (token != _replayRunToken) return false;
+      if (_isReplayPaused) {
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+        continue;
+      }
+      final step = remaining > 50 ? 50 : remaining;
+      await Future<void>.delayed(Duration(milliseconds: step));
+      remaining -= step;
+    }
+    while (_isReplayPaused) {
+      if (token != _replayRunToken) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+    }
+    return token == _replayRunToken;
+  }
+
   String get _mqttUrl {
     final host = _hostCtrl.text.trim();
     if (host.isEmpty) {
@@ -989,11 +1419,16 @@ class _MqttMetricsBar extends StatelessWidget {
     final sent = messages.where((m) => m.isSent).length;
     final recv = total - sent;
     final bytes = messages.fold<int>(0, (sum, m) => sum + m.sizeBytes);
+    final lastMessageAt = messages.isEmpty ? null : messages.last.timestamp;
     final uptimeSecs = session.connectedAt == null
         ? 0
         : DateTime.now().difference(session.connectedAt!).inSeconds;
-    final msgRate = uptimeSecs <= 0 ? '--' : (total / uptimeSecs).toStringAsFixed(2);
-    final throughput = uptimeSecs <= 0 ? '--' : '${(bytes / uptimeSecs).toStringAsFixed(1)} B/s';
+    final msgRate = session.rollingMessagesPerSec == null
+      ? (uptimeSecs <= 0 ? '--' : (total / uptimeSecs).toStringAsFixed(2))
+      : session.rollingMessagesPerSec!.toStringAsFixed(2);
+    final throughput = session.rollingBytesPerSec == null
+      ? (uptimeSecs <= 0 ? '--' : '${(bytes / uptimeSecs).toStringAsFixed(1)} B/s')
+      : '${session.rollingBytesPerSec!.toStringAsFixed(1)} B/s';
     final latency = session.connectLatencyMs == null ? '--' : '${session.connectLatencyMs} ms';
     final status = switch (session.connectionState) {
       MqttClientConnectionState.connected => 'Connected',
@@ -1017,6 +1452,12 @@ class _MqttMetricsBar extends StatelessWidget {
           _Metric(label: 'Throughput', value: throughput),
           _Metric(label: 'Latency', value: latency),
           _Metric(label: 'Connect attempts', value: '${session.connectAttempts}'),
+          _Metric(
+            label: 'Last msg',
+            value: lastMessageAt == null
+                ? '--'
+                : '${DateTime.now().difference(lastMessageAt).inSeconds}s ago',
+          ),
         ],
       ),
     );

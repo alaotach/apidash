@@ -15,6 +15,12 @@ class MqttSessionState {
     this.connectAttempts = 0,
     this.connectedAt,
     this.connectLatencyMs,
+    this.publishedCount = 0,
+    this.receivedCount = 0,
+    this.totalBytes = 0,
+    this.rollingMessagesPerSec,
+    this.rollingBytesPerSec,
+    this.lastMessageAt,
   });
 
   final MqttClientConnectionState connectionState;
@@ -24,6 +30,12 @@ class MqttSessionState {
   final int connectAttempts;
   final DateTime? connectedAt;
   final int? connectLatencyMs;
+  final int? publishedCount;
+  final int? receivedCount;
+  final int? totalBytes;
+  final double? rollingMessagesPerSec;
+  final double? rollingBytesPerSec;
+  final DateTime? lastMessageAt;
 
   bool get isConnected =>
       connectionState == MqttClientConnectionState.connected;
@@ -36,6 +48,12 @@ class MqttSessionState {
     int? connectAttempts,
     DateTime? connectedAt,
     int? connectLatencyMs,
+    int? publishedCount,
+    int? receivedCount,
+    int? totalBytes,
+    double? rollingMessagesPerSec,
+    double? rollingBytesPerSec,
+    DateTime? lastMessageAt,
   }) {
     return MqttSessionState(
       connectionState: connectionState ?? this.connectionState,
@@ -45,6 +63,13 @@ class MqttSessionState {
       connectAttempts: connectAttempts ?? this.connectAttempts,
       connectedAt: connectedAt ?? this.connectedAt,
       connectLatencyMs: connectLatencyMs ?? this.connectLatencyMs,
+        publishedCount: publishedCount ?? this.publishedCount ?? 0,
+        receivedCount: receivedCount ?? this.receivedCount ?? 0,
+        totalBytes: totalBytes ?? this.totalBytes ?? 0,
+      rollingMessagesPerSec:
+          rollingMessagesPerSec ?? this.rollingMessagesPerSec,
+      rollingBytesPerSec: rollingBytesPerSec ?? this.rollingBytesPerSec,
+      lastMessageAt: lastMessageAt ?? this.lastMessageAt,
     );
   }
 }
@@ -64,6 +89,12 @@ class MqttNotifier extends StateNotifier<MqttSessionState> {
       connectAttempts: state.connectAttempts + 1,
       connectedAt: null,
       connectLatencyMs: null,
+      publishedCount: 0,
+      receivedCount: 0,
+      totalBytes: 0,
+      rollingMessagesPerSec: null,
+      rollingBytesPerSec: null,
+      lastMessageAt: null,
     );
     try {
       await _service.connect(model);
@@ -76,8 +107,15 @@ class MqttNotifier extends StateNotifier<MqttSessionState> {
 
       _sub = _service.messageStream.listen(
         (msg) {
+          final nextLog = [...state.messageLog, msg];
+          final rolling = _rollingRates(nextLog);
           state = state.copyWith(
-            messageLog: [...state.messageLog, msg],
+            messageLog: nextLog,
+            receivedCount: (state.receivedCount ?? 0) + 1,
+            totalBytes: (state.totalBytes ?? 0) + msg.sizeBytes,
+            rollingMessagesPerSec: rolling.$1,
+            rollingBytesPerSec: rolling.$2,
+            lastMessageAt: msg.timestamp,
           );
         },
         onDone: () {
@@ -145,7 +183,16 @@ class MqttNotifier extends StateNotifier<MqttSessionState> {
     }
     try {
       final msg = _service.publish(topic, payload, qos: qos, retain: retain);
-      state = state.copyWith(messageLog: [...state.messageLog, msg]);
+      final nextLog = [...state.messageLog, msg];
+      final rolling = _rollingRates(nextLog);
+      state = state.copyWith(
+        messageLog: nextLog,
+        publishedCount: (state.publishedCount ?? 0) + 1,
+        totalBytes: (state.totalBytes ?? 0) + msg.sizeBytes,
+        rollingMessagesPerSec: rolling.$1,
+        rollingBytesPerSec: rolling.$2,
+        lastMessageAt: msg.timestamp,
+      );
     } catch (e) {
       final errorText = e.toString();
       final disconnected = errorText.contains('Not connected to broker');
@@ -176,6 +223,18 @@ class MqttNotifier extends StateNotifier<MqttSessionState> {
     _sub?.cancel();
     _service.dispose();
     super.dispose();
+  }
+
+  (double, double) _rollingRates(List<MqttMessage> log) {
+    final now = DateTime.now();
+    const window = Duration(seconds: 10);
+    final recent = log.where((m) => now.difference(m.timestamp) <= window);
+    final count = recent.length;
+    if (count == 0) {
+      return (0, 0);
+    }
+    final bytes = recent.fold<int>(0, (sum, m) => sum + m.sizeBytes);
+    return (count / window.inSeconds, bytes / window.inSeconds);
   }
 }
 

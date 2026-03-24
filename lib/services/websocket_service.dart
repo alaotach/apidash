@@ -99,7 +99,7 @@ class WebSocketTransportDiagnostics {
 /// Manages a single WebSocket connection lifecycle.
 class WebSocketService {
   Socket? _socket;
-  StreamSubscription<List<int>>? _subscription;
+  StreamSubscription? _subscription;
   StreamController<WebSocketMessage>? _controller;
   final _rxBuffer = BytesBuilder(copy: false);
   WebSocketTransportDiagnostics _diag =
