@@ -1183,6 +1183,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.4"
+  mqtt5_client:
+    dependency: "direct main"
+    description:
+      name: mqtt5_client
+      sha256: "643ceb3154d93fd1fb990dbc870064543d1750b23cf69d71329c5e1d13d02e4b"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.17.0"
   mqtt_client:
     dependency: "direct main"
     description:
@@ -1964,6 +1972,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.0"
+  universal_html:
+    dependency: transitive
+    description:
+      name: universal_html
+      sha256: "56536254004e24d9d8cfdb7dbbf09b74cf8df96729f38a2f5c238163e3d58971"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.4"
   universal_io:
     dependency: transitive
     description:

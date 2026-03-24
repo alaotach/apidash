@@ -66,6 +66,8 @@ class CollectionStateNotifier
   final HiveHandler hiveHandler;
   final baseHttpResponseModel = const HttpResponseModel();
   final Map<String, Map<APIType, String>> _urlByApiTypeByRequestId = {};
+  final Map<String, Map<APIType, HttpRequestModel>>
+      _httpRequestByApiTypeByRequestId = {};
 
   bool _isUrlScopedApiType(APIType apiType) {
     return apiType == APIType.rest ||
@@ -104,6 +106,34 @@ class CollectionStateNotifier
       apiType: requestModel.apiType,
       url: httpRequestModel.url,
     );
+    _cacheHttpRequestForApiType(
+      requestId: requestModel.id,
+      apiType: requestModel.apiType,
+      httpRequestModel: httpRequestModel,
+    );
+  }
+
+  void _cacheHttpRequestForApiType({
+    required String requestId,
+    required APIType apiType,
+    HttpRequestModel? httpRequestModel,
+  }) {
+    if (!_isUrlScopedApiType(apiType) || httpRequestModel == null) {
+      return;
+    }
+    final modelMap = _httpRequestByApiTypeByRequestId.putIfAbsent(
+      requestId,
+      () => {},
+    );
+    modelMap[apiType] = httpRequestModel.copyWith();
+  }
+
+  HttpRequestModel? _getCachedHttpRequestForApiType({
+    required String requestId,
+    required APIType apiType,
+  }) {
+    final model = _httpRequestByApiTypeByRequestId[requestId]?[apiType];
+    return model?.copyWith();
   }
 
   bool hasId(String id) => state?.keys.contains(id) ?? false;
@@ -181,6 +211,7 @@ class CollectionStateNotifier
     var map = {...state!};
     map.remove(rId);
     _urlByApiTypeByRequestId.remove(rId);
+    _httpRequestByApiTypeByRequestId.remove(rId);
     state = map;
     unsave();
   }
@@ -228,6 +259,12 @@ class CollectionStateNotifier
     if (_urlByApiTypeByRequestId.containsKey(rId)) {
       _urlByApiTypeByRequestId[newId] = {
         ..._urlByApiTypeByRequestId[rId]!,
+      };
+    }
+    if (_httpRequestByApiTypeByRequestId.containsKey(rId)) {
+      _httpRequestByApiTypeByRequestId[newId] = {
+        for (final entry in _httpRequestByApiTypeByRequestId[rId]!.entries)
+          entry.key: entry.value.copyWith(),
       };
     }
     _seedUrlCacheFromRequestModel(newModel);
@@ -309,14 +346,28 @@ class CollectionStateNotifier
         apiType: currentModel.apiType,
         url: currentHttpRequestModel?.url,
       );
+      _cacheHttpRequestForApiType(
+        requestId: rId,
+        apiType: currentModel.apiType,
+        httpRequestModel: currentHttpRequestModel,
+      );
+
+      final cachedTargetHttpRequestModel = _getCachedHttpRequestForApiType(
+        requestId: rId,
+        apiType: apiType,
+      );
 
       final targetApiTypeUrl = _getCachedUrlForApiType(
         requestId: rId,
         apiType: apiType,
       );
-      final resolvedTargetApiTypeUrl = targetApiTypeUrl.isNotEmpty
-          ? targetApiTypeUrl
-          : (currentHttpRequestModel?.url ?? '');
+
+      final resolvedTargetHttpRequestModel =
+          (cachedTargetHttpRequestModel ?? const HttpRequestModel()).copyWith(
+            url: cachedTargetHttpRequestModel != null
+                ? cachedTargetHttpRequestModel.url
+                : targetApiTypeUrl,
+          );
 
       final defaultModel = ref.read(settingsProvider).defaultAIModel;
       newModel = switch (apiType) {
@@ -330,9 +381,7 @@ class CollectionStateNotifier
             requestTabIndex: 0,
             name: name ?? currentModel.name,
             description: description ?? currentModel.description,
-            httpRequestModel: (currentHttpRequestModel ??
-                const HttpRequestModel())
-              .copyWith(url: resolvedTargetApiTypeUrl),
+            httpRequestModel: resolvedTargetHttpRequestModel,
             aiRequestModel: null,
           ),
 
@@ -386,6 +435,12 @@ class CollectionStateNotifier
           url: url,
         );
       }
+
+      _cacheHttpRequestForApiType(
+        requestId: rId,
+        apiType: newModel.apiType,
+        httpRequestModel: newModel.httpRequestModel,
+      );
     }
 
     var map = {...state!};
@@ -768,6 +823,7 @@ class CollectionStateNotifier
     ref.read(clearDataStateProvider.notifier).state = false;
     ref.read(requestSequenceProvider.notifier).state = [];
     _urlByApiTypeByRequestId.clear();
+    _httpRequestByApiTypeByRequestId.clear();
     state = {};
     unsave();
   }
@@ -783,6 +839,7 @@ class CollectionStateNotifier
         ),
       };
       _urlByApiTypeByRequestId.clear();
+      _httpRequestByApiTypeByRequestId.clear();
       _seedUrlCacheFromRequestModel(state![newId]!);
       return true;
     } else {
@@ -802,6 +859,7 @@ class CollectionStateNotifier
       }
       state = data;
       _urlByApiTypeByRequestId.clear();
+      _httpRequestByApiTypeByRequestId.clear();
       for (final model in data.values) {
         _seedUrlCacheFromRequestModel(model);
       }

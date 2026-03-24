@@ -55,6 +55,12 @@ class MqttMessage {
   int get hashCode => Object.hash(topic, payload, timestamp);
 }
 
+enum MqttProtocolVersion {
+  v31,
+  v311,
+  v5,
+}
+
 /// Model representing the configuration and session log for an MQTT request.
 class MqttRequestModel {
   const MqttRequestModel({
@@ -64,6 +70,7 @@ class MqttRequestModel {
     this.username,
     this.password,
     this.cleanSession = true,
+    this.protocolVersion = MqttProtocolVersion.v311,
     this.keepAliveSeconds = 60,
     this.useTls = false,
     this.subscribedTopics = const [],
@@ -80,6 +87,7 @@ class MqttRequestModel {
   final String? username;
   final String? password;
   final bool cleanSession;
+  final MqttProtocolVersion protocolVersion;
   final int keepAliveSeconds;
   final bool useTls;
 
@@ -102,6 +110,7 @@ class MqttRequestModel {
     String? username,
     String? password,
     bool? cleanSession,
+    MqttProtocolVersion? protocolVersion,
     int? keepAliveSeconds,
     bool? useTls,
     List<String>? subscribedTopics,
@@ -118,6 +127,7 @@ class MqttRequestModel {
       username: username ?? this.username,
       password: password ?? this.password,
       cleanSession: cleanSession ?? this.cleanSession,
+      protocolVersion: protocolVersion ?? this.protocolVersion,
       keepAliveSeconds: keepAliveSeconds ?? this.keepAliveSeconds,
       useTls: useTls ?? this.useTls,
       subscribedTopics: subscribedTopics ?? this.subscribedTopics,
