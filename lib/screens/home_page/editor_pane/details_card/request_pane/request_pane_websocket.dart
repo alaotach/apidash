@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -25,7 +26,10 @@ enum _WsBinaryDecoder {
   utf8,
   protobuf,
   messagePack,
+  cbor,
+  avro,
   flatBuffers,
+  plugin,
   fixedQuote,
   fixedTrade,
   fixedOrderBook,
@@ -210,6 +214,30 @@ class _WsFlatSchemaBundle {
   final String? detectedRootTable;
 }
 
+class _WsReplayEntry {
+  const _WsReplayEntry({
+    required this.direction,
+    required this.type,
+    required this.timestamp,
+    this.textPayload,
+    this.binaryPayload,
+    this.sizeBytes,
+    this.isTruncated = false,
+    this.originalSizeBytes,
+  });
+
+  final String direction;
+  final String type;
+  final DateTime timestamp;
+  final String? textPayload;
+  final Uint8List? binaryPayload;
+  final int? sizeBytes;
+  final bool isTruncated;
+  final int? originalSizeBytes;
+}
+
+typedef _WsDecoderPlugin = _WsDecodedPayload Function(Uint8List bytes);
+
 class EditWebSocketRequestPane extends ConsumerStatefulWidget {
   const EditWebSocketRequestPane({super.key});
 
@@ -223,6 +251,14 @@ class _EditWebSocketRequestPaneState
   final _urlController = TextEditingController();
   final _msgController = TextEditingController();
   final _searchController = TextEditingController();
+  final _subprotocolsController = TextEditingController();
+  final _originController = TextEditingController();
+  final _maxFrameBytesController = TextEditingController();
+  final _maxReconnectAttemptsController = TextEditingController(text: '8');
+  final _keepAliveIntervalController = TextEditingController(text: '0');
+  final _headersJsonController = TextEditingController(text: '{}');
+  final _replayJitterController = TextEditingController(text: '0');
+  final _replaySeedController = TextEditingController(text: '42');
   final _msgFocusNode = FocusNode();
   final _scrollController = ScrollController();
   final List<Timer> _scheduledSendTimers = [];
@@ -239,14 +275,30 @@ class _EditWebSocketRequestPaneState
   bool _groupByType = false;
   int _delaySendMs = 0;
   int _throttleMs = 0;
+  bool _truncateFrames = true;
+  WebSocketReconnectPolicy _reconnectPolicy = WebSocketReconnectPolicy.off;
   DateTime _nextSendAt = DateTime.fromMillisecondsSinceEpoch(0);
   String? _jsonInputError;
   String? _protoSchemaFileName;
   String? _flatSchemaFileName;
+  String? _avroSchemaFileName;
+  String? _pluginFileName;
   String? _selectedProtoMessageType;
   final Map<String, Map<int, _WsProtoFieldSchema>> _protoFieldSchemas = {};
   final Map<int, String> _flatBufferFieldAliases = {};
   final Map<String, _WsFlatObjectSchema> _flatTableSchemas = {};
+  Map<String, Object?>? _avroSchema;
+  String? _activePluginName;
+  final Map<String, _WsDecoderPlugin> _decoderPlugins = {};
+  final List<_WsReplayEntry> _replayEntries = [];
+  bool _replaySentOnly = true;
+  bool _isReplayRunning = false;
+  bool _isReplayPaused = false;
+  double _replaySpeed = 1.0;
+  int _replayProgressIndex = 0;
+  int _replayProgressTotal = 0;
+  int _replayRunToken = 0;
+  bool _isHydratingDraft = false;
   String? _selectedFlatTableType;
 
   @override
@@ -258,20 +310,110 @@ class _EditWebSocketRequestPaneState
       if (url != null && url.isNotEmpty) {
         _urlController.text = url;
       }
+      _hydrateConnectionDraft();
     });
   }
 
   @override
   void dispose() {
+    _stopReplay(silent: true);
     for (final timer in _scheduledSendTimers) {
       timer.cancel();
     }
     _urlController.dispose();
     _msgController.dispose();
     _searchController.dispose();
+    _subprotocolsController.dispose();
+    _originController.dispose();
+    _maxFrameBytesController.dispose();
+    _maxReconnectAttemptsController.dispose();
+    _keepAliveIntervalController.dispose();
+    _headersJsonController.dispose();
+    _replayJitterController.dispose();
+    _replaySeedController.dispose();
     _msgFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _hydrateConnectionDraft() {
+    final requestId = ref.read(selectedIdStateProvider);
+    if (requestId == null) return;
+    final requestModel = ref.read(selectedRequestModelProvider);
+    final savedDraft = _draftFromSavedConfig(requestModel?.wsConnectionConfig);
+    final drafts = ref.read(webSocketConnectionDraftsProvider.notifier);
+    final draft = savedDraft ?? drafts.forRequest(requestId);
+    _isHydratingDraft = true;
+    _subprotocolsController.text = draft.subprotocolsCsv;
+    _originController.text = draft.origin;
+    _maxFrameBytesController.text = draft.maxFrameBytes;
+    _maxReconnectAttemptsController.text = draft.maxReconnectAttempts;
+    _keepAliveIntervalController.text = draft.keepAliveIntervalSec;
+    _headersJsonController.text = draft.headersJson;
+    _truncateFrames = draft.truncateFrames;
+    _reconnectPolicy = draft.reconnectPolicy;
+    _isHydratingDraft = false;
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _persistConnectionDraft() {
+    if (_isHydratingDraft) return;
+    final requestId = ref.read(selectedIdStateProvider);
+    if (requestId == null) return;
+    final draft = WebSocketConnectionDraft(
+      subprotocolsCsv: _subprotocolsController.text,
+      origin: _originController.text,
+      maxFrameBytes: _maxFrameBytesController.text,
+      maxReconnectAttempts: _maxReconnectAttemptsController.text,
+      keepAliveIntervalSec: _keepAliveIntervalController.text,
+      headersJson: _headersJsonController.text,
+      truncateFrames: _truncateFrames,
+      reconnectPolicy: _reconnectPolicy,
+    );
+
+    ref.read(webSocketConnectionDraftsProvider.notifier).updateDraft(
+          requestId,
+          draft,
+        );
+    ref.read(collectionStateNotifierProvider.notifier).update(
+          wsConnectionConfig: _savedConfigFromDraft(draft),
+        );
+  }
+
+  WebSocketConnectionDraft? _draftFromSavedConfig(
+    Map<String, Object?>? saved,
+  ) {
+    if (saved == null || saved.isEmpty) return null;
+    final reconnectName = saved['reconnectPolicy']?.toString();
+    final reconnect = WebSocketReconnectPolicy.values.where(
+      (p) => p.name == reconnectName,
+    );
+    return WebSocketConnectionDraft(
+      subprotocolsCsv: saved['subprotocolsCsv']?.toString() ?? '',
+      origin: saved['origin']?.toString() ?? '',
+      maxFrameBytes: saved['maxFrameBytes']?.toString() ?? '',
+      maxReconnectAttempts: saved['maxReconnectAttempts']?.toString() ?? '8',
+      keepAliveIntervalSec: saved['keepAliveIntervalSec']?.toString() ?? '0',
+      headersJson: saved['headersJson']?.toString() ?? '{}',
+      truncateFrames: saved['truncateFrames'] == true,
+      reconnectPolicy:
+          reconnect.isEmpty ? WebSocketReconnectPolicy.off : reconnect.first,
+    );
+  }
+
+  Map<String, Object?> _savedConfigFromDraft(WebSocketConnectionDraft draft) {
+    return {
+      'subprotocolsCsv': draft.subprotocolsCsv,
+      'origin': draft.origin,
+      'maxFrameBytes': draft.maxFrameBytes,
+      'maxReconnectAttempts': draft.maxReconnectAttempts,
+      'keepAliveIntervalSec': draft.keepAliveIntervalSec,
+      'headersJson': draft.headersJson,
+      'truncateFrames': draft.truncateFrames,
+      'reconnectPolicy': draft.reconnectPolicy.name,
+    };
   }
 
   @override
@@ -300,6 +442,7 @@ class _EditWebSocketRequestPaneState
         final requestModel = ref.read(selectedRequestModelProvider);
         final url = requestModel?.httpRequestModel?.url;
         _urlController.text = (url != null && url.isNotEmpty) ? url : '';
+        _hydrateConnectionDraft();
       }
     });
 
@@ -327,6 +470,7 @@ class _EditWebSocketRequestPaneState
                   enabled: !session.isConnected,
                   onChanged: (v) {
                     ref.read(collectionStateNotifierProvider.notifier).update(url: v);
+                    _persistConnectionDraft();
                   },
                   decoration: InputDecoration(
                     labelText: 'WebSocket URL',
@@ -398,6 +542,190 @@ class _EditWebSocketRequestPaneState
             ],
           ),
         ),
+
+        if (_activeTab == _WsPaneTab.connection)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHighest.withAlpha(100),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  LayoutBuilder(builder: (context, constraints) {
+                    final reconnectField = DropdownButtonFormField<WebSocketReconnectPolicy>(
+                      value: _reconnectPolicy,
+                      decoration: const InputDecoration(
+                        labelText: 'Reconnect Profile',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: WebSocketReconnectPolicy.off,
+                          child: Text('Off'),
+                        ),
+                        DropdownMenuItem(
+                          value: WebSocketReconnectPolicy.immediate,
+                          child: Text('Immediate'),
+                        ),
+                        DropdownMenuItem(
+                          value: WebSocketReconnectPolicy.exponential,
+                          child: Text('Exponential backoff'),
+                        ),
+                        DropdownMenuItem(
+                          value: WebSocketReconnectPolicy.exponentialJitter,
+                          child: Text('Exponential + jitter'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(() => _reconnectPolicy = value);
+                        _persistConnectionDraft();
+                      },
+                    );
+
+                    final keepAliveField = TextField(
+                      controller: _keepAliveIntervalController,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => _persistConnectionDraft(),
+                      decoration: const InputDecoration(
+                        labelText: 'Keepalive Ping (sec, 0=off)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    );
+
+                    if (constraints.maxWidth < 780) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          reconnectField,
+                          const SizedBox(height: 8),
+                          keepAliveField,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(child: reconnectField),
+                        const SizedBox(width: 8),
+                        Expanded(child: keepAliveField),
+                      ],
+                    );
+                  }),
+                  const SizedBox(height: 8),
+                  LayoutBuilder(builder: (context, constraints) {
+                    final subprotocolField = TextField(
+                      controller: _subprotocolsController,
+                      onChanged: (_) => _persistConnectionDraft(),
+                      decoration: const InputDecoration(
+                        labelText: 'Subprotocols (comma-separated)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    );
+
+                    final originField = TextField(
+                      controller: _originController,
+                      onChanged: (_) => _persistConnectionDraft(),
+                      decoration: const InputDecoration(
+                        labelText: 'Origin (optional)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    );
+
+                    if (constraints.maxWidth < 780) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          subprotocolField,
+                          const SizedBox(height: 8),
+                          originField,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(child: subprotocolField),
+                        const SizedBox(width: 8),
+                        Expanded(child: originField),
+                      ],
+                    );
+                  }),
+                  const SizedBox(height: 8),
+                  LayoutBuilder(builder: (context, constraints) {
+                    final frameField = TextField(
+                      controller: _maxFrameBytesController,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => _persistConnectionDraft(),
+                      decoration: const InputDecoration(
+                        labelText: 'Max Frame Bytes (empty=unlimited)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    );
+
+                    final reconnectAttemptsField = TextField(
+                      controller: _maxReconnectAttemptsController,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => _persistConnectionDraft(),
+                      decoration: const InputDecoration(
+                        labelText: 'Max Reconnect Attempts',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    );
+
+                    if (constraints.maxWidth < 780) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          frameField,
+                          const SizedBox(height: 8),
+                          reconnectAttemptsField,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(child: frameField),
+                        const SizedBox(width: 8),
+                        Expanded(child: reconnectAttemptsField),
+                      ],
+                    );
+                  }),
+                  const SizedBox(height: 8),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Truncate Oversized Frames'),
+                    value: _truncateFrames,
+                    onChanged: (value) {
+                      setState(() => _truncateFrames = value);
+                      _persistConnectionDraft();
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _headersJsonController,
+                    minLines: 2,
+                    maxLines: 4,
+                    onChanged: (_) => _persistConnectionDraft(),
+                    decoration: const InputDecoration(
+                      labelText: 'Custom Headers (JSON object)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
 
         if (_activeTab == _WsPaneTab.messages)
           Padding(
@@ -555,8 +883,17 @@ class _EditWebSocketRequestPaneState
                                 value: _WsBinaryDecoder.messagePack,
                                 child: Text('MessagePack')),
                             DropdownMenuItem(
+                              value: _WsBinaryDecoder.cbor,
+                              child: Text('CBOR')),
+                            DropdownMenuItem(
+                              value: _WsBinaryDecoder.avro,
+                              child: Text('Avro (OCF)')),
+                            DropdownMenuItem(
                                 value: _WsBinaryDecoder.flatBuffers,
                                 child: Text('FlatBuffers')),
+                            DropdownMenuItem(
+                              value: _WsBinaryDecoder.plugin,
+                              child: Text('Plugin decoder')),
                             DropdownMenuItem(
                                 value: _WsBinaryDecoder.fixedQuote,
                                 child: Text('Fixed: Quote')),
@@ -636,6 +973,20 @@ class _EditWebSocketRequestPaneState
                                 ? 'Upload FlatBuffers BFBS/JSON'
                                 : 'Flat schema: $_flatSchemaFileName'),
                           ),
+                          OutlinedButton.icon(
+                            onPressed: _uploadAvroSchema,
+                            icon: const Icon(Icons.data_object_rounded, size: 16),
+                            label: Text(_avroSchemaFileName == null
+                                ? 'Upload Avro Schema (AVSC/JSON)'
+                                : 'Avro schema: $_avroSchemaFileName'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _uploadDecoderPlugin,
+                            icon: const Icon(Icons.extension_rounded, size: 16),
+                            label: Text(_pluginFileName == null
+                                ? 'Load Decoder Plugin (JSON)'
+                                : 'Plugin: $_pluginFileName'),
+                          ),
                           if (_flatTableSchemas.isNotEmpty)
                             SizedBox(
                               width: 300,
@@ -669,8 +1020,154 @@ class _EditWebSocketRequestPaneState
                                 },
                               ),
                             ),
+                          if (_decoderPlugins.isNotEmpty)
+                            SizedBox(
+                              width: 300,
+                              child: DropdownButtonFormField<String>(
+                                value: _activePluginName,
+                                isExpanded: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Active Plugin Decoder',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                                items: _decoderPlugins.keys
+                                    .map((name) => DropdownMenuItem<String>(
+                                          value: name,
+                                          child: Text(name,
+                                              overflow: TextOverflow.ellipsis),
+                                        ))
+                                    .toList(growable: false),
+                                onChanged: (value) {
+                                  if (value == null) return;
+                                  setState(() => _activePluginName = value);
+                                },
+                              ),
+                            ),
+                          OutlinedButton.icon(
+                            onPressed: _exportSessionJsonl,
+                            icon: const Icon(Icons.download_rounded, size: 16),
+                            label: const Text('Export Session JSONL'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _importSessionJsonl,
+                            icon: const Icon(Icons.upload_file_rounded, size: 16),
+                            label: const Text('Import Session JSONL'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: session.isConnected && _replayEntries.isNotEmpty
+                                ? () => _startReplay(notifier)
+                                : null,
+                            icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                            label: Text('Replay (${_replayEntries.length})'),
+                          ),
+                          FilterChip(
+                            selected: _replaySentOnly,
+                            onSelected: (value) {
+                              setState(() => _replaySentOnly = value);
+                            },
+                            label: const Text('Replay sent-only'),
+                          ),
                         ],
                       ),
+                      if (_replayEntries.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  FilledButton.icon(
+                                    onPressed: session.isConnected && !_isReplayRunning
+                                        ? () => _startReplay(notifier)
+                                        : null,
+                                    icon: const Icon(Icons.play_arrow_rounded),
+                                    label: const Text('Start replay'),
+                                  ),
+                                  OutlinedButton.icon(
+                                    onPressed: _isReplayRunning
+                                        ? _toggleReplayPause
+                                        : null,
+                                    icon: Icon(
+                                      _isReplayPaused
+                                          ? Icons.play_circle_outline_rounded
+                                          : Icons.pause_circle_outline_rounded,
+                                    ),
+                                    label: Text(_isReplayPaused ? 'Resume' : 'Pause'),
+                                  ),
+                                  OutlinedButton.icon(
+                                    onPressed: _isReplayRunning ? _stopReplay : null,
+                                    icon: const Icon(Icons.stop_circle_outlined),
+                                    label: const Text('Stop'),
+                                  ),
+                                  Text(
+                                    'Progress: $_replayProgressIndex/$_replayProgressTotal',
+                                    style: Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  SizedBox(
+                                    width: 230,
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Speed: ${_replaySpeed.toStringAsFixed(2)}x',
+                                          style: Theme.of(context).textTheme.bodySmall,
+                                        ),
+                                        Slider(
+                                          value: _replaySpeed,
+                                          min: 0.25,
+                                          max: 4,
+                                          divisions: 15,
+                                          onChanged: (v) {
+                                            setState(() => _replaySpeed = v);
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _replayJitterController,
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Jitter +/- ms',
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _replaySeedController,
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Jitter seed',
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -915,6 +1412,12 @@ class _EditWebSocketRequestPaneState
                             ),
                             const SizedBox(width: 8),
                             OutlinedButton.icon(
+                              onPressed: session.isConnected ? notifier.ping : null,
+                              icon: const Icon(Icons.network_ping_rounded),
+                              label: const Text('Ping'),
+                            ),
+                            const SizedBox(width: 8),
+                            OutlinedButton.icon(
                               onPressed: () => notifier.simulateDropConnection(),
                               icon: const Icon(Icons.portable_wifi_off_rounded),
                               label: const Text('Drop connection'),
@@ -1011,7 +1514,9 @@ class _EditWebSocketRequestPaneState
 
   Future<void> _connect(WebSocketNotifier notifier) async {
     final url = _normalizeWebSocketUrl(_urlController.text.trim());
-    await notifier.connect(url);
+    final options = _buildConnectionOptions();
+    if (options == null) return;
+    await notifier.connect(url, options: options);
     final session = ref.read(webSocketNotifierProvider);
     ref.read(collectionStateNotifierProvider.notifier).logProtocolRequest(
       apiType: APIType.websocket,
@@ -1022,6 +1527,73 @@ class _EditWebSocketRequestPaneState
           ? 'WebSocket connected'
           : (session.error ?? 'WebSocket connection failed'),
       responseBody: session.error,
+    );
+  }
+
+  WebSocketConnectionOptions? _buildConnectionOptions() {
+    Map<String, String> headers = const {};
+    final headersText = _headersJsonController.text.trim();
+    if (headersText.isNotEmpty && headersText != '{}') {
+      try {
+        final parsed = jsonDecode(headersText);
+        if (parsed is! Map<String, dynamic>) {
+          throw const FormatException('Headers must be a JSON object.');
+        }
+        headers = parsed.map((k, v) => MapEntry(k, v.toString()));
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Invalid headers JSON: $e')),
+        );
+        return null;
+      }
+    }
+
+    final maxFrameText = _maxFrameBytesController.text.trim();
+    final maxReconnectText = _maxReconnectAttemptsController.text.trim();
+    final keepAliveText = _keepAliveIntervalController.text.trim();
+
+    final maxFrame = maxFrameText.isEmpty ? null : int.tryParse(maxFrameText);
+    final maxReconnect = int.tryParse(maxReconnectText);
+    final keepAlive = int.tryParse(keepAliveText);
+
+    if (maxFrameText.isNotEmpty && maxFrame == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Max frame bytes must be a valid integer.')),
+      );
+      return null;
+    }
+    if (maxReconnect == null || maxReconnect < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Max reconnect attempts must be >= 0.')),
+      );
+      return null;
+    }
+    if (keepAlive == null || keepAlive < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Keepalive seconds must be >= 0.')),
+      );
+      return null;
+    }
+
+    final subprotocols = _subprotocolsController.text
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+
+    _persistConnectionDraft();
+
+    return WebSocketConnectionOptions(
+      headers: headers,
+      subprotocols: subprotocols,
+      origin: _originController.text.trim().isEmpty
+          ? null
+          : _originController.text.trim(),
+      maxFrameBytes: maxFrame,
+      truncateFrames: _truncateFrames,
+      reconnectPolicy: _reconnectPolicy,
+      maxReconnectAttempts: maxReconnect,
+      keepAliveIntervalSec: keepAlive,
     );
   }
 
@@ -1371,6 +1943,270 @@ class _EditWebSocketRequestPaneState
     }
   }
 
+  Future<void> _uploadAvroSchema() async {
+    final files = await pickFiles(extensions: const ['avsc', 'json']);
+    if (files.isEmpty) return;
+    final file = files.first;
+    try {
+      final text = await file.readAsString();
+      final decoded = jsonDecode(text);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Avro schema must be a JSON object');
+      }
+      setState(() {
+        _avroSchema = decoded;
+        _avroSchemaFileName = getFilenameFromPath(file.path);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Loaded Avro schema: $_avroSchemaFileName')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load Avro schema: $e')),
+      );
+    }
+  }
+
+  Future<void> _uploadDecoderPlugin() async {
+    final files = await pickFiles(extensions: const ['json']);
+    if (files.isEmpty) return;
+    final file = files.first;
+    try {
+      final text = await file.readAsString();
+      final decoded = jsonDecode(text);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Plugin file must be a JSON object');
+      }
+      final plugin = _buildPluginFromJson(decoded);
+      final pluginName = (decoded['name']?.toString().trim().isNotEmpty ?? false)
+          ? decoded['name'].toString().trim()
+          : getFilenameFromPath(file.path);
+      setState(() {
+        _decoderPlugins[pluginName] = plugin;
+        _activePluginName = pluginName;
+        _pluginFileName = getFilenameFromPath(file.path);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Loaded plugin decoder: $pluginName')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load decoder plugin: $e')),
+      );
+    }
+  }
+
+  Future<void> _exportSessionJsonl() async {
+    final session = ref.read(webSocketNotifierProvider);
+    if (session.messages.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No messages to export.')),
+      );
+      return;
+    }
+    try {
+      final lines = session.messages.map((m) {
+        final payload = m.binaryPayload == null
+            ? null
+            : base64Encode(m.binaryPayload!);
+        return jsonEncode({
+          'direction': m.isSent ? 'sent' : 'received',
+          'type': m.type,
+          'timestamp': m.timestamp.toUtc().toIso8601String(),
+          'textPayload': m.textPayload,
+          'binaryBase64': payload,
+          'sizeBytes': m.sizeBytes,
+          'isTruncated': m.isTruncated,
+          'originalSizeBytes': m.originalSizeBytes,
+        });
+      }).join('\n');
+      final path = await getFileDownloadpath(
+        'apidash-ws-session-${DateTime.now().millisecondsSinceEpoch}',
+        'jsonl',
+      );
+      if (path == null) {
+        throw const FormatException('Unable to resolve downloads directory');
+      }
+      await saveFile(path, Uint8List.fromList(utf8.encode(lines)));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Session exported to: $path')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to export session: $e')),
+      );
+    }
+  }
+
+  Future<void> _importSessionJsonl() async {
+    final files = await pickFiles(extensions: const ['jsonl']);
+    if (files.isEmpty) return;
+    final file = files.first;
+    try {
+      final raw = await file.readAsString();
+      final imported = <_WsReplayEntry>[];
+      for (final line in raw.split('\n')) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        final obj = jsonDecode(trimmed);
+        if (obj is! Map<String, dynamic>) continue;
+        imported.add(
+          _WsReplayEntry(
+            direction: (obj['direction'] ?? 'sent').toString(),
+            type: (obj['type'] ?? 'text').toString(),
+            timestamp: DateTime.tryParse((obj['timestamp'] ?? '').toString()) ??
+                DateTime.now(),
+            textPayload: obj['textPayload']?.toString(),
+            binaryPayload: obj['binaryBase64'] == null
+                ? null
+                : base64Decode(obj['binaryBase64'].toString()),
+            sizeBytes: (obj['sizeBytes'] as num?)?.toInt(),
+            isTruncated: obj['isTruncated'] == true,
+            originalSizeBytes: (obj['originalSizeBytes'] as num?)?.toInt(),
+          ),
+        );
+      }
+      imported.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      setState(() {
+        _replayEntries
+          ..clear()
+          ..addAll(imported);
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Imported ${imported.length} replay entries.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to import JSONL: $e')),
+      );
+    }
+  }
+
+  void _startReplay(WebSocketNotifier notifier) {
+    if (_replayEntries.isEmpty) return;
+    final entries = _replayEntries
+        .where((e) => !_replaySentOnly || e.direction == 'sent')
+        .toList(growable: false)
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    if (entries.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No replay entries match current filter.')),
+      );
+      return;
+    }
+
+    _stopReplay(silent: true);
+    final token = ++_replayRunToken;
+    setState(() {
+      _isReplayRunning = true;
+      _isReplayPaused = false;
+      _replayProgressIndex = 0;
+      _replayProgressTotal = entries.length;
+    });
+
+    final jitter = int.tryParse(_replayJitterController.text.trim()) ?? 0;
+    final seed = int.tryParse(_replaySeedController.text.trim()) ?? 42;
+    final random = Random(seed);
+
+    unawaited(_runReplay(notifier, entries, token, jitter.abs(), random));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Replaying ${entries.length} entries...')),
+    );
+  }
+
+  void _toggleReplayPause() {
+    if (!_isReplayRunning) return;
+    setState(() {
+      _isReplayPaused = !_isReplayPaused;
+    });
+  }
+
+  void _stopReplay({bool silent = false}) {
+    _replayRunToken++;
+    if (!_isReplayRunning && silent) return;
+    setState(() {
+      _isReplayRunning = false;
+      _isReplayPaused = false;
+    });
+    if (!silent) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Replay stopped.')),
+      );
+    }
+  }
+
+  Future<void> _runReplay(
+    WebSocketNotifier notifier,
+    List<_WsReplayEntry> entries,
+    int token,
+    int jitterMs,
+    Random random,
+  ) async {
+    var previous = entries.first.timestamp;
+    for (var i = 0; i < entries.length; i++) {
+      if (token != _replayRunToken) return;
+      final entry = entries[i];
+      final rawDelayMs = i == 0 ? 0 : entry.timestamp.difference(previous).inMilliseconds;
+      previous = entry.timestamp;
+
+      final speedAdjusted = (rawDelayMs / _replaySpeed).round();
+      final jitter = jitterMs == 0 ? 0 : random.nextInt((jitterMs * 2) + 1) - jitterMs;
+      final delayMs = max(0, speedAdjusted + jitter);
+
+      final keepGoing = await _waitReplayDelay(delayMs, token);
+      if (!keepGoing || token != _replayRunToken) return;
+      if (!sessionCanSend(ref.read(webSocketNotifierProvider))) {
+        _stopReplay();
+        return;
+      }
+
+      if (entry.type == 'binary') {
+        if (entry.binaryPayload != null) {
+          notifier.sendBinary(entry.binaryPayload!);
+        }
+      } else {
+        notifier.sendText(entry.textPayload ?? '');
+      }
+      if (!mounted) return;
+      setState(() {
+        _replayProgressIndex = i + 1;
+      });
+    }
+    if (!mounted || token != _replayRunToken) return;
+    setState(() {
+      _isReplayRunning = false;
+      _isReplayPaused = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Replay completed.')),
+    );
+  }
+
+  Future<bool> _waitReplayDelay(int totalMs, int token) async {
+    var remaining = totalMs;
+    while (remaining > 0) {
+      if (token != _replayRunToken) return false;
+      if (_isReplayPaused) {
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+        continue;
+      }
+      final step = remaining > 50 ? 50 : remaining;
+      await Future<void>.delayed(Duration(milliseconds: step));
+      remaining -= step;
+    }
+    while (_isReplayPaused) {
+      if (token != _replayRunToken) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+    }
+    return token == _replayRunToken;
+  }
+
   _WsFlatSchemaBundle _extractFlatSchemasFromBfbs(
       Uint8List bytes) {
     final schemas = <String, _WsFlatObjectSchema>{};
@@ -1660,6 +2496,20 @@ class _EditWebSocketRequestPaneState
             sequence: _extractSequence(value),
             streamKey: _extractStreamKey(value),
           );
+        case _WsBinaryDecoder.cbor:
+          final value = _decodeCbor(bytes);
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(value),
+            sequence: _extractSequence(value),
+            streamKey: _extractStreamKey(value),
+          );
+        case _WsBinaryDecoder.avro:
+          final value = _decodeAvro(bytes);
+          return _WsDecodedPayload(
+            display: const JsonEncoder.withIndent('  ').convert(value),
+            sequence: _extractSequence(value),
+            streamKey: _extractStreamKey(value),
+          );
         case _WsBinaryDecoder.flatBuffers:
           final fb = _decodeFlatBufferTable(bytes);
           return _WsDecodedPayload(
@@ -1667,6 +2517,14 @@ class _EditWebSocketRequestPaneState
             sequence: (fb['sequence'] as num?)?.toInt(),
             streamKey: fb['stream'] as String?,
           );
+        case _WsBinaryDecoder.plugin:
+          final pluginName = _activePluginName;
+          if (pluginName == null || !_decoderPlugins.containsKey(pluginName)) {
+            return _WsDecodedPayload(
+              display: 'No active plugin decoder selected.\n${_toHex(bytes)}',
+            );
+          }
+          return _decoderPlugins[pluginName]!(bytes);
         case _WsBinaryDecoder.fixedQuote:
           final event = _decodeFixedQuote(bytes);
           return _WsDecodedPayload(
@@ -2198,6 +3056,439 @@ class _EditWebSocketRequestPaneState
       default:
         throw FormatException('Unsupported MessagePack token 0x${c.toRadixString(16)}');
     }
+  }
+
+  Object? _decodeCbor(Uint8List bytes) {
+    final value = _decodeCborValue(bytes, 0);
+    return value.$1;
+  }
+
+  (Object?, int) _decodeCborValue(Uint8List bytes, int offset) {
+    if (offset >= bytes.lengthInBytes) {
+      throw const FormatException('Unexpected EOF in CBOR');
+    }
+    final head = bytes[offset];
+    final major = head >> 5;
+    final add = head & 0x1f;
+    var idx = offset + 1;
+
+    int readLen(int ai) {
+      if (ai < 24) return ai;
+      if (ai == 24) return bytes[idx++];
+      if (ai == 25) {
+        final v = ByteData.sublistView(bytes, idx, idx + 2)
+            .getUint16(0, Endian.big);
+        idx += 2;
+        return v;
+      }
+      if (ai == 26) {
+        final v = ByteData.sublistView(bytes, idx, idx + 4)
+            .getUint32(0, Endian.big);
+        idx += 4;
+        return v;
+      }
+      throw FormatException('Unsupported CBOR additional info: $ai');
+    }
+
+    switch (major) {
+      case 0:
+        return (readLen(add), idx);
+      case 1:
+        final n = readLen(add);
+        return (-1 - n, idx);
+      case 2:
+        final len = readLen(add);
+        final out = Uint8List.sublistView(bytes, idx, idx + len);
+        idx += len;
+        return (_toHex(out), idx);
+      case 3:
+        final len = readLen(add);
+        final out = utf8.decode(bytes.sublist(idx, idx + len), allowMalformed: true);
+        idx += len;
+        return (out, idx);
+      case 4:
+        final len = readLen(add);
+        final list = <Object?>[];
+        for (var i = 0; i < len; i++) {
+          final next = _decodeCborValue(bytes, idx);
+          list.add(next.$1);
+          idx = next.$2;
+        }
+        return (list, idx);
+      case 5:
+        final len = readLen(add);
+        final map = <String, Object?>{};
+        for (var i = 0; i < len; i++) {
+          final k = _decodeCborValue(bytes, idx);
+          idx = k.$2;
+          final v = _decodeCborValue(bytes, idx);
+          idx = v.$2;
+          map[k.$1.toString()] = v.$1;
+        }
+        return (map, idx);
+      case 7:
+        if (add == 20) return (false, idx);
+        if (add == 21) return (true, idx);
+        if (add == 22) return (null, idx);
+        if (add == 26) {
+          final v = ByteData.sublistView(bytes, idx, idx + 4)
+              .getFloat32(0, Endian.big);
+          idx += 4;
+          return (v, idx);
+        }
+        if (add == 27) {
+          final v = ByteData.sublistView(bytes, idx, idx + 8)
+              .getFloat64(0, Endian.big);
+          idx += 8;
+          return (v, idx);
+        }
+        return ('simple($add)', idx);
+      default:
+        throw FormatException('Unsupported CBOR major type: $major');
+    }
+  }
+
+  Map<String, Object?> _decodeAvro(Uint8List bytes) {
+    final isContainer =
+        bytes.lengthInBytes >= 4 && bytes[0] == 0x4f && bytes[1] == 0x62 && bytes[2] == 0x6a && bytes[3] == 0x01;
+    if (isContainer) {
+      return _decodeAvroContainer(bytes);
+    }
+    return {
+      'protocol': 'avro-binary',
+      'warning': 'Raw Avro binary decode needs exact writer schema and codec context.',
+      if (_avroSchema != null) 'writerSchema': _avroSchema,
+      'payloadHex': _toHex(bytes),
+    };
+  }
+
+  Map<String, Object?> _decodeAvroContainer(Uint8List bytes) {
+    var index = 4;
+    final metadata = <String, String>{};
+    while (true) {
+      final countInfo = _readAvroLong(bytes, index);
+      var count = countInfo.$1;
+      index = countInfo.$2;
+      if (count == 0) break;
+      if (count < 0) {
+        final blockSize = _readAvroLong(bytes, index);
+        count = -count;
+        index = blockSize.$2;
+      }
+      for (var i = 0; i < count; i++) {
+        final keyInfo = _readAvroString(bytes, index);
+        final key = keyInfo.$1;
+        index = keyInfo.$2;
+        final valInfo = _readAvroBytes(bytes, index);
+        index = valInfo.$2;
+        metadata[key] = utf8.decode(valInfo.$1, allowMalformed: true);
+      }
+    }
+    if (index + 16 > bytes.lengthInBytes) {
+      throw const FormatException('Invalid Avro OCF: missing sync marker');
+    }
+    final sync = Uint8List.sublistView(bytes, index, index + 16);
+    index += 16;
+
+    final blocks = <Map<String, Object?>>[];
+    while (index < bytes.lengthInBytes) {
+      final countInfo = _readAvroLong(bytes, index);
+      final blockCount = countInfo.$1;
+      index = countInfo.$2;
+      if (blockCount == 0) break;
+      final sizeInfo = _readAvroLong(bytes, index);
+      final blockSize = sizeInfo.$1;
+      index = sizeInfo.$2;
+      final payloadStart = index;
+      index += blockSize;
+      if (index + 16 > bytes.lengthInBytes) break;
+      final blockSync = Uint8List.sublistView(bytes, index, index + 16);
+      index += 16;
+      blocks.add({
+        'count': blockCount,
+        'sizeBytes': blockSize,
+        'syncMatchesHeader': _toHex(blockSync) == _toHex(sync),
+        'payloadPreviewHex': _toHex(
+          Uint8List.sublistView(
+            bytes,
+            payloadStart,
+            (payloadStart + (blockSize > 24 ? 24 : blockSize)).clamp(0, bytes.lengthInBytes),
+          ),
+        ),
+      });
+    }
+
+    Map<String, Object?>? parsedSchema;
+    final schemaText = metadata['avro.schema'];
+    if (schemaText != null) {
+      final decoded = jsonDecode(schemaText);
+      if (decoded is Map<String, dynamic>) {
+        parsedSchema = decoded;
+      }
+    }
+
+    return {
+      'protocol': 'avro-ocf',
+      'codec': metadata['avro.codec'] ?? 'null',
+      'metadata': metadata,
+      if (parsedSchema != null) 'schema': parsedSchema,
+      'syncMarker': _toHex(sync),
+      'blockCount': blocks.length,
+      'blocks': blocks,
+    };
+  }
+
+  _WsDecoderPlugin _buildPluginFromJson(Map<String, dynamic> spec) {
+    final pluginType = (spec['type'] ?? 'fixed-struct').toString();
+    if (pluginType == 'transform-pipeline') {
+      return _buildTransformPipelinePlugin(spec);
+    }
+    if (pluginType == 'schema-lookup') {
+      return _buildSchemaLookupPlugin(spec);
+    }
+    if (pluginType != 'fixed-struct') {
+      throw FormatException('Unsupported plugin type: $pluginType');
+    }
+    final endianness = (spec['endianness'] ?? 'little').toString();
+    final endian = endianness == 'big' ? Endian.big : Endian.little;
+    final fieldsRaw = spec['fields'];
+    if (fieldsRaw is! List) {
+      throw const FormatException('Plugin fields must be a list');
+    }
+    final fields = fieldsRaw
+        .whereType<Map>()
+        .map((e) => e.map((k, v) => MapEntry(k.toString(), v)))
+        .toList(growable: false);
+
+    return (Uint8List bytes) {
+      final out = <String, Object?>{
+        'pluginType': pluginType,
+        'endianness': endianness,
+      };
+      final bd = ByteData.sublistView(bytes);
+      for (final field in fields) {
+        final name = field['name']?.toString();
+        final type = field['type']?.toString();
+        final offset = (field['offset'] as num?)?.toInt();
+        if (name == null || type == null || offset == null) continue;
+        if (offset < 0 || offset >= bytes.lengthInBytes) continue;
+        switch (type) {
+          case 'u8':
+            out[name] = bd.getUint8(offset);
+            break;
+          case 'i8':
+            out[name] = bd.getInt8(offset);
+            break;
+          case 'u16':
+            if (offset + 2 <= bytes.lengthInBytes) out[name] = bd.getUint16(offset, endian);
+            break;
+          case 'i16':
+            if (offset + 2 <= bytes.lengthInBytes) out[name] = bd.getInt16(offset, endian);
+            break;
+          case 'u32':
+            if (offset + 4 <= bytes.lengthInBytes) out[name] = bd.getUint32(offset, endian);
+            break;
+          case 'i32':
+            if (offset + 4 <= bytes.lengthInBytes) out[name] = bd.getInt32(offset, endian);
+            break;
+          case 'u64':
+            if (offset + 8 <= bytes.lengthInBytes) out[name] = bd.getUint64(offset, endian);
+            break;
+          case 'i64':
+            if (offset + 8 <= bytes.lengthInBytes) out[name] = bd.getInt64(offset, endian);
+            break;
+          case 'f32':
+            if (offset + 4 <= bytes.lengthInBytes) out[name] = bd.getFloat32(offset, endian);
+            break;
+          case 'f64':
+            if (offset + 8 <= bytes.lengthInBytes) out[name] = bd.getFloat64(offset, endian);
+            break;
+          default:
+            out[name] = 'unsupported:$type';
+            break;
+        }
+      }
+      return _WsDecodedPayload(
+        display: const JsonEncoder.withIndent('  ').convert(out),
+        sequence: _extractSequence(out),
+        streamKey: _extractStreamKey(out),
+      );
+    };
+  }
+
+  _WsDecoderPlugin _buildTransformPipelinePlugin(Map<String, dynamic> spec) {
+    final stepsRaw = spec['steps'];
+    if (stepsRaw is! List) {
+      throw const FormatException('transform-pipeline requires a steps list');
+    }
+    final steps = stepsRaw
+        .whereType<Map>()
+        .map((s) => s.map((k, v) => MapEntry(k.toString(), v)))
+        .toList(growable: false);
+
+    return (Uint8List bytes) {
+      Object? current = bytes;
+      for (final step in steps) {
+        final op = (step['op'] ?? '').toString();
+        if (op == 'decode') {
+          final decoder = (step['decoder'] ?? 'utf8-json').toString();
+          if (current is! Uint8List) {
+            throw const FormatException('decode op expects binary input');
+          }
+          current = _decodeByPluginDecoder(decoder, current);
+          continue;
+        }
+        if (op == 'pick') {
+          final path = step['path']?.toString();
+          if (path == null || path.isEmpty) {
+            throw const FormatException('pick op requires path');
+          }
+          current = _lookupPath(current, path);
+          continue;
+        }
+        if (op == 'schemaLookup') {
+          final keyPath = step['keyPath']?.toString() ?? '';
+          final schemasRaw = step['schemas'];
+          if (schemasRaw is! Map) {
+            throw const FormatException('schemaLookup requires schemas map');
+          }
+          final mapCurrent = current is Map ? Map<String, Object?>.from(current as Map) : <String, Object?>{'value': current};
+          final key = keyPath.isEmpty
+              ? null
+              : _lookupPath(mapCurrent, keyPath)?.toString();
+          final schema = key == null ? null : schemasRaw[key];
+          mapCurrent['_schemaLookup'] = {
+            'keyPath': keyPath,
+            'key': key,
+            'schema': schema,
+          };
+          current = mapCurrent;
+          continue;
+        }
+        throw FormatException('Unsupported pipeline op: $op');
+      }
+
+      final display = current is String
+          ? current
+          : const JsonEncoder.withIndent('  ').convert(current);
+      return _WsDecodedPayload(
+        display: display,
+        sequence: _extractSequence(current),
+        streamKey: _extractStreamKey(current),
+      );
+    };
+  }
+
+  _WsDecoderPlugin _buildSchemaLookupPlugin(Map<String, dynamic> spec) {
+    final decoder = (spec['decoder'] ?? 'utf8-json').toString();
+    final keyPath = (spec['keyPath'] ?? '').toString();
+    final schemasRaw = spec['schemas'];
+    if (schemasRaw is! Map) {
+      throw const FormatException('schema-lookup requires schemas map');
+    }
+
+    return (Uint8List bytes) {
+      final decoded = _decodeByPluginDecoder(decoder, bytes);
+      final mapValue = decoded is Map
+          ? Map<String, Object?>.from(decoded as Map)
+          : <String, Object?>{'value': decoded};
+      final key = keyPath.isEmpty ? null : _lookupPath(mapValue, keyPath)?.toString();
+      final schema = key == null ? null : schemasRaw[key];
+      final out = <String, Object?>{
+        'decoder': decoder,
+        'keyPath': keyPath,
+        'key': key,
+        'schema': schema,
+        'payload': mapValue,
+      };
+      return _WsDecodedPayload(
+        display: const JsonEncoder.withIndent('  ').convert(out),
+        sequence: _extractSequence(mapValue),
+        streamKey: _extractStreamKey(mapValue),
+      );
+    };
+  }
+
+  Object? _decodeByPluginDecoder(String decoder, Uint8List bytes) {
+    switch (decoder) {
+      case 'hex':
+        return _toHex(bytes);
+      case 'utf8':
+        return utf8.decode(bytes, allowMalformed: true);
+      case 'utf8-json':
+        final text = utf8.decode(bytes, allowMalformed: true);
+        try {
+          return jsonDecode(text);
+        } catch (_) {
+          return text;
+        }
+      case 'msgpack':
+        return _decodeMessagePack(bytes);
+      case 'cbor':
+        return _decodeCbor(bytes);
+      case 'avro':
+        return _decodeAvro(bytes);
+      case 'protobuf':
+        return _decodeProtoWire(bytes, schemaType: _selectedProtoMessageType);
+      case 'flatbuffers':
+        return _decodeFlatBufferTable(bytes);
+      default:
+        throw FormatException('Unsupported plugin decoder: $decoder');
+    }
+  }
+
+  Object? _lookupPath(Object? value, String path) {
+    Object? current = value;
+    final parts = path.split('.').where((p) => p.isNotEmpty);
+    for (final part in parts) {
+      if (current is Map) {
+        current = current[part];
+        continue;
+      }
+      if (current is List) {
+        final idx = int.tryParse(part);
+        if (idx == null || idx < 0 || idx >= current.length) return null;
+        current = current[idx];
+        continue;
+      }
+      return null;
+    }
+    return current;
+  }
+
+  (int, int) _readAvroLong(Uint8List bytes, int start) {
+    var value = 0;
+    var shift = 0;
+    var index = start;
+    while (index < bytes.lengthInBytes) {
+      final b = bytes[index++];
+      value |= (b & 0x7f) << shift;
+      if ((b & 0x80) == 0) {
+        final decoded = (value >> 1) ^ (-(value & 1));
+        return (decoded, index);
+      }
+      shift += 7;
+      if (shift > 63) {
+        throw const FormatException('Avro long varint too large');
+      }
+    }
+    throw const FormatException('Truncated Avro long');
+  }
+
+  (Uint8List, int) _readAvroBytes(Uint8List bytes, int start) {
+    final lenInfo = _readAvroLong(bytes, start);
+    final len = lenInfo.$1;
+    if (len < 0) throw const FormatException('Negative Avro bytes length');
+    final index = lenInfo.$2;
+    if (index + len > bytes.lengthInBytes) {
+      throw const FormatException('Truncated Avro bytes');
+    }
+    return (Uint8List.sublistView(bytes, index, index + len), index + len);
+  }
+
+  (String, int) _readAvroString(Uint8List bytes, int start) {
+    final bytesInfo = _readAvroBytes(bytes, start);
+    return (utf8.decode(bytesInfo.$1, allowMalformed: true), bytesInfo.$2);
   }
 
   Map<String, Object?> _decodeFlatBufferTable(Uint8List bytes) {
@@ -2846,12 +4137,53 @@ class _ConnectionView extends StatelessWidget {
     final uptime = session.connectedAt == null
         ? '--'
         : '${DateTime.now().difference(session.connectedAt!).inSeconds}s';
+    final rtt = session.lastPongRttMs == null ? '--' : '${session.lastPongRttMs} ms';
+    final reconnectingIn = session.reconnectScheduledInMs == null
+      ? '--'
+      : '${session.reconnectScheduledInMs} ms';
+    final rollingMsgRate = session.rollingMessagesPerSec == null
+      ? '--'
+      : session.rollingMessagesPerSec!.toStringAsFixed(2);
+    final rollingByteRate = session.rollingBytesPerSec == null
+      ? '--'
+      : '${session.rollingBytesPerSec!.toStringAsFixed(1)} B/s';
+    final uri = Uri.tryParse(session.connectedUrl ?? '');
+    final tlsSummary = (uri?.scheme.toLowerCase() == 'wss')
+      ? 'TLS active'
+      : 'No TLS (ws)';
+    final compression = session.compressionEnabled == null
+      ? 'Unknown'
+      : (session.compressionEnabled! ? 'enabled/observed' : 'disabled/not observed');
+    final fragmentation =
+      'frames=${session.frameCount}, continuation=${session.continuationFrameCount}, fragmentedMessages=${session.fragmentedMessageCount}';
+    final compressionInternals =
+      'compressedFrames=${session.compressedFrameCount}, compressedBytes=${session.compressedPayloadBytes}, decompressedBytes=${session.decompressedPayloadBytes}';
+    final controlFrames =
+      'ping=${session.pingFrameCount}, pong=${session.pongFrameCount}, close=${session.closeFrameCount}';
 
     final rows = <(String, String)>[
       ('URL', connectedUrl),
       ('Protocol', protocol),
       ('Connect latency', latency),
       ('Uptime', uptime),
+      ('RTT (last pong)', rtt),
+      ('Reconnect attempts', '${session.reconnectAttempts}'),
+      ('Reconnect scheduled in', reconnectingIn),
+      ('Dropped frames', '${session.droppedFrames}'),
+      ('Out-of-order frames', '${session.outOfOrderFrames}'),
+      ('Sequence gap events', '${session.sequenceGapEvents}'),
+      ('Rolling msg/s (10s)', rollingMsgRate),
+      ('Rolling bytes/s (10s)', rollingByteRate),
+      ('TLS/Cert summary', tlsSummary),
+      ('TLS subject', session.tlsSubject ?? '--'),
+      ('TLS issuer', session.tlsIssuer ?? '--'),
+      ('TLS SHA1', session.tlsSha1 ?? '--'),
+      ('TLS valid from', session.tlsValidFrom?.toIso8601String() ?? '--'),
+      ('TLS valid to', session.tlsValidTo?.toIso8601String() ?? '--'),
+      ('Compression', compression),
+      ('Compression internals', compressionInternals),
+      ('Fragmentation visibility', fragmentation),
+      ('Control frames', controlFrames),
       (
         'Status',
         switch (session.connectionState) {
@@ -3086,7 +4418,9 @@ class _MessageRowState extends State<_MessageRow> {
             'Direction: ${isSent ? 'Sent' : 'Received'}\n'
                 'Type: ${msg.type}\n'
                 'Timestamp: ${msg.timestamp.toIso8601String()}\n'
-                'Size: ${_messageBytesLength(msg)} B',
+                'Size: ${_messageBytesLength(msg)} B\n'
+                'Truncated: ${msg.isTruncated}\n'
+                'Original size: ${msg.originalSizeBytes ?? '--'}',
           ),
           const SizedBox(height: 6),
               _section(context, 'Raw payload', _rawPayloadForSection(msg)),

@@ -5,7 +5,7 @@ part 'request_model.freezed.dart';
 part 'request_model.g.dart';
 
 @freezed
-class RequestModel with _$RequestModel {
+abstract class RequestModel with _$RequestModel {
   @JsonSerializable(
     explicitToJson: true,
     anyMap: true,
@@ -15,7 +15,7 @@ class RequestModel with _$RequestModel {
     @Default(APIType.rest) APIType apiType,
     @Default("") String name,
     @Default("") String description,
-    @JsonKey(includeToJson: false) @Default(0) requestTabIndex,
+    @JsonKey(includeToJson: false) @Default(0) int requestTabIndex,
     HttpRequestModel? httpRequestModel,
     int? responseStatus,
     String? message,
@@ -26,6 +26,7 @@ class RequestModel with _$RequestModel {
     String? preRequestScript,
     String? postRequestScript,
     AIRequestModel? aiRequestModel,
+    @Default(<String, Object?>{}) Map<String, Object?> wsConnectionConfig,
   }) = _RequestModel;
 
   factory RequestModel.fromJson(Map<String, Object?> json) =>

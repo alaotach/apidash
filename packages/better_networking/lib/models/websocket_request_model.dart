@@ -10,6 +10,8 @@ class WebSocketMessage {
     required this.timestamp,
     this.type = 'text',
     this.sizeBytes,
+    this.isTruncated = false,
+    this.originalSizeBytes,
   }) : assert(
          (textPayload != null && binaryPayload == null) ||
              (textPayload == null && binaryPayload != null) ||
@@ -34,6 +36,12 @@ class WebSocketMessage {
   /// Byte size of the payload, if known.
   final int? sizeBytes;
 
+  /// Whether payload was truncated by frame-size safety controls.
+  final bool isTruncated;
+
+  /// Original frame byte size before truncation, if available.
+  final int? originalSizeBytes;
+
   bool get isBinary => type == 'binary';
 
   /// Backward-compatible payload string view.
@@ -52,6 +60,8 @@ class WebSocketMessage {
     DateTime? timestamp,
     String? type,
     int? sizeBytes,
+    bool? isTruncated,
+    int? originalSizeBytes,
   }) {
     return WebSocketMessage(
       textPayload: textPayload ?? this.textPayload,
@@ -60,6 +70,8 @@ class WebSocketMessage {
       timestamp: timestamp ?? this.timestamp,
       type: type ?? this.type,
       sizeBytes: sizeBytes ?? this.sizeBytes,
+      isTruncated: isTruncated ?? this.isTruncated,
+      originalSizeBytes: originalSizeBytes ?? this.originalSizeBytes,
     );
   }
 
@@ -71,11 +83,21 @@ class WebSocketMessage {
           _bytesEqual(other.binaryPayload, binaryPayload) &&
           other.isSent == isSent &&
           other.timestamp == timestamp &&
-          other.type == type;
+          other.type == type &&
+          other.isTruncated == isTruncated &&
+          other.originalSizeBytes == originalSizeBytes;
 
   @override
   int get hashCode =>
-      Object.hash(textPayload, _bytesHash(binaryPayload), isSent, timestamp, type);
+      Object.hash(
+        textPayload,
+        _bytesHash(binaryPayload),
+        isSent,
+        timestamp,
+        type,
+        isTruncated,
+        originalSizeBytes,
+      );
 
   static bool _bytesEqual(Uint8List? a, Uint8List? b) {
     if (identical(a, b)) return true;
