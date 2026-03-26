@@ -21,9 +21,9 @@
 
 ---
 
-### Motivation & Past Experience
+## Motivation & Past Experience
 
-1. **Have you worked on or contributed to a FOSS project before? Can you attach repo links or relevant PRs?**
+### 1. **Have you worked on or contributed to a FOSS project before? Can you attach repo links or relevant PRs?**
 
 Yes. I have made some contributions to API Dash itself and hackclub community and worked on real user-facing issues covering crash prevention, validation robustness, UI correctness, and execution-history UX.
 
@@ -61,69 +61,53 @@ Additional FOSS contributions (Hack Club YSWS Catalog):
 
 While these were smaller PRs, they demonstrate consistent open-source participation, quick turnaround, and attention to correctness in production-facing content.
 
-2. **What is your one project/achievement that you are most proud of? Why?**
+### 2. **What is your one project/achievement that you are most proud of? Why?**
 
-The project I am most proud of is **DotVerse**, a realtime multiplayer pixel-art metaverse built around websocket-first system design.
+The project I'm most proud of is **DotVerse**, a realtime multiplayer pixel-art metaverse. But honestly, what I'm proud of isn't the product, it's surviving one particular bug that drove me insane for days.
+Pixels were broken in three different ways at once. Sometimes you'd draw something and it would just disappear a second later. Sometimes your pixels would show up for everyone else but not for you. Sometimes they wouldn't update at all. And the thing that made it genuinely maddening was that none of this was consistent, it would happen randomly, so I couldn't even reliably reproduce it to debug it. I spent a lot of time just staring at the screen trying to catch it happening.
+After a lot of trial and error I finally traced it back to something embarrassingly simple: I was spamming the websocket. When you drag to draw, you're touching a new pixel on basically every frame of mouse movement. I was emitting a separate event for every single one of those pixels. The server was getting flooded, events were racing each other, and state was ending up different on different clients depending on which events arrived in which order. The connection was dropping frames under load and nobody's canvas agreed on what was true.
+The fix wasn't complicated once I understood what was happening. I stopped emitting per-pixel and started batching, collect everything touched during a drag, send it all together when the drag ends. Combined with server-side sequencing so clients process updates in order, all three failure modes went away at once.
+That one debugging session shaped the whole rest of the architecture. The canvas world server (Node.js + Socket.IO) and the minigame server (Python websockets, handling lobbies, voting, scoring) are separate processes, partly because I learned the hard way that mixing two different consistency requirements into one server makes both of them worse.
+I mention all this because it's directly relevant to why I want to build the WebSocket module in API Dash. I'm not coming at this theoretically, I know where these systems actually break, because I've been the person staring at a canvas wondering why my own pixels aren't showing up for me.
 
-I am especially proud of DotVerse because I built it as an engineering system, not just a UI product. The architecture has two realtime backends:
-
-- A Node.js + Socket.IO world server for infinite-canvas synchronization, heartbeat/connection health, server-side activity tracking, and periodic snapshot persistence. This includes event pipelines such as `pixel_update`, `canvas_reset`, `sync_request`, and app-level timeout disconnection logic. The core implementation is in [dotverse/server/index.js](dotverse/server/index.js).
-- A dedicated Python websocket game server for live lobby/minigame orchestration with async state transitions for `create_lobby`, `join_lobby`, `set_ready`, `start_game`, theme voting, drawing submission, and vote aggregation. The core implementation is in [dotverse/minigame/websocket_server.py](dotverse/minigame/websocket_server.py).
-
-The frontend is a React + TypeScript + Canvas realtime client that integrates these streams and keeps the UX responsive under constant event flow. The primary client stack lives in [dotverse/frontend](dotverse/frontend).
-
-Why this project matters to me:
-
-- It forced me to solve practical realtime engineering problems: event ordering, state consistency across concurrent clients, reconnect behavior, and long-running session stability.
-- It required careful protocol design for multiplayer state, not just component-level coding.
-- It gave me direct experience in building and hardening websocket pipelines end-to-end, which strongly informs my GSoC proposal for WebSocket, MQTT, and gRPC support in API Dash.
-
-3. **What kind of problems or challenges motivate you the most to solve them?**
+### 3. **What kind of problems or challenges motivate you the most to solve them?**
 
 I am most motivated by problems where there is no obvious existing solution, especially when people assume they are too hard or impractical to build.
 
 I have an entrepreneurship-oriented mindset, so I naturally gravitate toward technically difficult ideas with strong real-world use. For example, I am currently exploring:
 
-- a mobile-GPU AI inference/training platform to coordinate model workloads across multiple phones,
+- a mobile-GPU AI inference/training platform to coordinate model workloads across clusters of multiple phones,
 - a mobile AI agent with on-device vision and deep device control to execute real tasks (from app flows to automation),
 - and a websocket-synced Android lock-screen drawing experience where actions are mirrored in real time across devices.
 
 What motivates me is the combination of technical depth, product-level constraints, and user impact. I enjoy turning "this should be impossible" into something reliable enough to demonstrate and iterate.
 
-4. **Will you be working on GSoC full-time? In case not, what will you be studying or working on while working on the project?**
+### 4. **Will you be working on GSoC full-time? In case not, what will you be studying or working on while working on the project?**
 
-Yes. I intend to work full-time on GSoC during the coding period.
+Yes, full-time. GSoC is my main commitment during the coding period and I'm treating it that way.
+I won't pretend I have zero going on, because I'm in college, I have side projects, and I've worked with clients. But honestly that's exactly why I'm not worried about this. Client work taught me that deadlines are real, communication matters, and you don't get to disappear when things get hard. I bring that same accountability here. I'll show up every week, flag blockers early, and I won't let review turnaround become a bottleneck on the mentor's end.
 
-I may have routine academic obligations, but I will plan around them and keep execution cadence, review turnaround, and mentor syncs uninterrupted.
+### 5. **Do you mind regularly syncing up with the project mentors?**
 
-5. **Do you mind regularly syncing up with the project mentors?**
+Not at all, I actually prefer it. I learned this the hard way with my first client. They were pretty quiet throughout the project, I kept building, and when I handed them the final product they said they didn't want it running on the PC itself, they wanted it on the cloud. Suddenly I'm dealing with containers, Kubernetes, deployment pipelines, things that weren't in the original plan at all. It took a lot of extra effort that could've been avoided with one conversation early on.
+That experience genuinely changed how I work. Regular syncs aren't overhead to me anymore, they're how you avoid expensive surprises at the end. I'd rather flag a blocker or a design question on Monday than explain a derailed week on Friday. I'll bring progress openly, show what's working and what isn't, and if I'm choosing between two implementation approaches I'll bring both to the mentor instead of silently picking one.
 
-Not at all. I prefer structured, regular mentor syncs and iterative checkpoints.
+### 6. **What interests you the most about API Dash?**
 
-I am comfortable sharing:
+Honestly, I've felt the pain this tool is trying to solve.
+When I was building **Aloo Bot**, backed by hundreds of different APIs, I wasn't even using proper tools. I had a Python script I'd manually modify every time I needed to test something different. Change the endpoint, change the payload, run it, check the output, repeat. For REST that was annoying. When I got into trading automation with Binance and Bybit, testing exchange APIs under real latency pressure with that same script was genuinely painful. Every test was a manual edit away and there was no visibility into what was actually happening on the wire.
+API Dash is the tool I wished existed back then. It already has a solid cross-platform foundation and a clean architecture, it's not a toy, it's something developers actually use. And it's open source, which means when I add WebSocket, MQTT, and gRPC support, it's not a feature locked inside one company's product, it's available to every developer who's still out there editing Python scripts to test their APIs.
+That's what interests me most. Not just the technical challenge, but the fact that shipping this actually makes something meaningfully better for people who build what I build.
 
-- weekly milestones,
-- blockers and risk updates,
-- implementation alternatives,
-- and before/after demos for each major PR.
+### 7. **Can you mention some areas where the project can be improved?**
 
-6. **What interests you the most about API Dash?**
+The obvious one is what this proposal is about, WebSocket, MQTT, and gRPC support. But a few things I noticed while actually working in the codebase:
+Long-running sessions have almost no observability. If you're connected to a WebSocket for ten minutes and something goes wrong, there's not much to help you understand what happened, no message timeline metadata, no transport diagnostics, no way to replay the session. For debugging real production issues that's a real gap.
+The history is useful but lightweight for protocol sessions. It shows that a request was made but not much about what the session looked like, how long it ran, how many messages exchanged, whether it disconnected cleanly. That context matters when you're debugging intermittent failures.
+Contributor onboarding for protocol work is thin. The existing docs cover HTTP well but if someone wanted to add a new protocol or extend an existing one, there's not much guiding them through the provider/model/service pattern. That slows down community contributions.
+And one small UX thing — advanced controls in the editor panes could be organized more consistently. Right now different panes handle progressive disclosure differently, which adds friction when you're switching between protocols.
 
-I have grown up building API-heavy systems, and API Dash feels like the exact kind of tool I always wanted to contribute to.
-
-I previously built a Discord bot called **Aloo Bot** backed by hundreds of APIs, and I have also worked with financial exchange APIs (including Binance and Bybit) to build client-oriented trading automation. I have even explored ultra-low-latency bot workflows inspired by HFT-style constraints. Those experiences made me deeply interested in API ergonomics, reliability, and protocol behavior under real-world pressure.
-
-That is why API Dash interests me so much: it already has a polished cross-platform foundation, and I want to help evolve it into a **single open-source multi-protocol client** where developers can test request/response, streaming, and pub/sub systems without switching between fragmented tools.
-
-7. **Can you mention some areas where the project can be improved?**
-
-- Native, first-class support for **WebSocket, MQTT, and gRPC**.
-- Stronger observability for long-running sessions.
-- Better replay/import/export workflows for reproducible debugging.
-- More protocol-oriented tests and docs for onboarding contributors.
-- Consistent advanced tool organization in protocol panes to preserve editor space.
-
-8. **Have you interacted with and helped API Dash community? (GitHub/Discord links)**
+### 8. **Have you interacted with and helped API Dash community? (GitHub/Discord links)**
 
 Yes. I have interacted through issue-driven PR work and community contribution channels.
 
