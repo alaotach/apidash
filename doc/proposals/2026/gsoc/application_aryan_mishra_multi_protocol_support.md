@@ -3,8 +3,6 @@
 1. **Full Name:** Aryan Mishra
 2. **Contact info (public email):** aryanmi2001@gmail.com
 3. **Discord handle in our server (mandatory):** alaotach
-<!-- 4. **Home page (if any):** TODO: add homepage link (or N/A) -->
-<!-- 5. **Blog (if any):** TODO: add blog link (or N/A) -->
 6. **GitHub profile link:** https://github.com/alaotach
 7. **Twitter, LinkedIn, other socials:** [Twitter](https://x.com/alaotach) [Linkedin](https://linkedin.com/in/alaotach)
 8. **Time zone:** IST (UTC+05:30)
@@ -125,23 +123,22 @@ Recent PoC contribution evidence:
 
 ### Project Proposal Information
 
-1. **Proposal Title**
+## Proposal Title
 
 **WebSocket, MQTT, and gRPC Support in API Dash**
 
-2. **Abstract: A brief summary about the problem that you will be tackling and how.**
+## Abstract
 
-API Dash currently excels in HTTP-centric workflows, but modern developer stacks rely heavily on event-driven and streaming protocols such as WebSocket, MQTT, and gRPC. This project extends API Dash into a multi-protocol API client by introducing protocol-specific models, execution routing, and dedicated editors while preserving the existing architecture and user experience.
+API Dash is excellent for HTTP, but a large chunk of modern backend systems don't speak HTTP. WebSocket powers real-time dashboards and chat. MQTT runs IoT sensors and telemetry pipelines. gRPC connects microservices and ML infrastructure. Right now, developers testing these systems have to leave API Dash entirely and juggle separate tools, or do what I used to do, which is maintain a Python script they modify by hand every time.
 
-The approach is to build protocol handlers with clear separation of concerns, add robust connection/session state handling, provide message-oriented diagnostics and replay capabilities, and introduce reliable persistence/testing strategies so these protocols are practical for daily developer usage rather than experimental add-ons.
+This project adds first-class support for all three protocols directly inside API Dash. Not as experimental add-ons as complete workflows with their own request models, connection state, message timelines, and debugging tools, built on the same provider/service/model architecture the codebase already uses for REST.
 
-By project completion, API Dash will support end-to-end workflows for:
+By the end of GSoC, a developer should be able to open API Dash and:
+- connect to a WebSocket endpoint, send and receive messages, and replay a session for debugging
+- connect to an MQTT broker, publish and subscribe across topics with QoS controls
+- invoke a gRPC method via server reflection without needing a `.proto` file on hand
 
-- WebSocket real-time bidirectional testing,
-- MQTT broker-based publish/subscribe testing,
-- gRPC schema-driven method invocation,
-
-with production-grade UX patterns for reliability, observability, and reproducibility.
+All of this while the existing HTTP workflows stay completely untouched and with production-grade UX patterns for reliability, observability, and reproducibility.
 
 3. **Detailed Description**
 
@@ -149,145 +146,189 @@ with production-grade UX patterns for reliability, observability, and reproducib
 
 ## 3.1 Problem Statement and Need
 
-API teams increasingly depend on protocols beyond REST:
+Most backend systems today aren't pure REST. WebSocket handles real-time event streams and bidirectional channels. MQTT drives IoT telemetry and broker-mediated messaging. gRPC powers contract-first microservice communication. But API Dash currently has no support for any of them.
 
-- WebSocket for low-latency event streams and bidirectional channels,
-- MQTT for telemetry, IoT, and broker-mediated messaging,
-- gRPC for contract-first microservice communication.
+That forces developers into a fragmented workflow, a different tool for each protocol, repeated environment setup, no shared history, and no way to reproduce a debugging session across systems. I know this firsthand because before I found proper tooling I was doing all of this with a Python script I'd manually edit every time I needed to test something different.
 
-Today, this usually forces developers to juggle separate tools and fragmented workflows.
-
-The result:
-
-- repeated environment setup,
-- inconsistent debugging workflows,
-- weak reproducibility across protocol sessions,
-- and slower development iteration cycles.
-
-This project addresses that gap directly inside API Dash.
+This project closes that gap directly inside API Dash. One tool, all four protocols, the same UX.
 
 ## 3.2 Existing Codebase Grounding
 
-To ensure realistic integration:
+Before writing any proposal I spent time actually reading the codebase to find where protocol support would need to plug in. Three files are the key extension points:
 
-- Existing HTTP model is defined in `packages/better_networking/lib/models/http_request_model.dart`.
-- API-type request editor switching is centered in `lib/screens/home_page/editor_pane/details_card/request_pane/request_pane.dart`.
-- Request execution orchestration flows through `sendRequest()` in `lib/providers/collection_providers.dart`.
+- `packages/better_networking/lib/models/http_request_model.dart` — where the existing HTTP request model lives. New protocol models need to follow the same pattern rather than extending this one, which was the root cause of failure in previous MQTT and WebSocket PRs.
+- `lib/screens/home_page/editor_pane/details_card/request_pane/request_pane.dart` — where API type switching decides which editor to render. This is where new protocol panes get routed in.
+- `lib/providers/collection_providers.dart` — where `sendRequest()` orchestrates execution. This is where the protocol router hooks into the existing flow without breaking HTTP.
 
-These are the key extension points for protocol routing and UI/editor insertion.
+I also searched all `APIType` switch callsites across the codebase to map every place that needs updating when a new protocol is added, not just the obvious ones.
 
 ## 3.3 Proposed Architecture Extension
 
-Rather than overloading HTTP abstractions, this project introduces protocol-native models and handlers.
-
-Primary models:
+The core decision here is to not touch the existing HTTP abstractions at all. Previous PRs that tried to reuse `HttpRequestModel` for WebSocket and MQTT ended up breaking things or losing state — the models have fundamentally different shapes and lifecycles. Each protocol gets its own dedicated model instead:
 
 - `WebSocketRequestModel`
 - `MqttRequestModel`
 - `GrpcRequestModel`
 
-Routing pattern:
+Execution routes through a clean dispatch chain:
+```
+RequestExecutor → ProtocolRouter → ProtocolHandler
+```
 
-- `RequestExecutor -> ProtocolRouter -> ProtocolHandler`
+HTTP hits the existing pipeline unchanged. Every new protocol hits its own handler, with its own state machine and validation logic, completely isolated from the others.
 
-Design goals:
+Four design goals drove every decision here:
 
-- isolate protocol-specific state/validation,
-- preserve existing HTTP behavior,
-- allow incremental PRs,
-- and keep future extensibility straightforward.
+- **Isolation** — protocol-specific state and validation lives in its own model, not bolted onto HTTP abstractions
+- **Non-regression** — existing HTTP, REST, and GraphQL workflows are untouched by any of this
+- **Incremental delivery** — the architecture slices cleanly into small PRs: routing baseline first, then one protocol at a time
+- **Extensibility** — adding a fourth protocol in the future means adding a new handler, not rearchitecting the existing ones
 
 ![](https://github.com/user-attachments/assets/c2933c78-806e-48c6-968e-36a3995bdef6)
 
 ## 3.4 WebSocket Module
 
-### 3.4.1 Transport and connection behavior
+The WebSocket module is the most complete of the three in the PoC. Here's what it covers:
 
-- Support `ws://` and `wss://`.
-- Custom headers and query support.
-- Explicit connection lifecycle handling.
-- Controlled reconnect policies (including exponential backoff variants).
-- Keepalive and ping/pong observability support.
+### 3.4.1 Transport and Connection Behavior
 
-### 3.4.2 Message handling
+- `ws://` and `wss://` support with TLS certificate introspection
+- Custom headers and query parameters on the handshake request
+- Explicit connection lifecycle — connecting, connected, reconnecting, disconnected, error each with appropriate controls enabled or disabled
+- Reconnect policies with exponential backoff
+- Keepalive with ping/pong visibility in the message timeline
 
-- Send/receive text, JSON, and binary payloads.
-- Timeline presentation with sent/received direction indicators.
-- Payload metadata (type, size, timestamp).
-- Binary-safe rendering options.
+### 3.4.2 Message Handling
 
-### 3.4.3 Advanced tooling
+- Send and receive text, JSON, and binary payloads
+- Timeline view with sent/received direction indicators, sequence numbers, timestamps, and payload size
+- Binary-safe rendering with configurable decoder (UTF-8, hex, base64)
+- Search and filter across the message timeline
 
-- Decoder pipeline support for schema-backed or plugin-backed decoding.
-- Session export/import in JSONL-oriented format.
-- Replay controls (sent-only and full-session variants).
-- Diagnostics surface for transport/session behavior.
+### 3.4.3 Advanced Tooling
+
+- Decoder pipeline — upload a Protobuf descriptor, FlatBuffers schema, or Avro schema to decode binary messages automatically
+- Session export and import in JSONL format for reproducible debugging
+- Replay controls — replay sent-only or full session, with speed and jitter controls
+- Transport diagnostics — TLS subject, issuer, fingerprint, validity window, frame-level metrics
 
 ### 3.4.4 Persistence
 
-- Draft connection options retained with request state.
-- Session metadata captured for history/debug use.
+- Draft connection options saved with request state — reopening a request restores your last URL, headers, and settings
+- Session metadata captured for history — duration, message count, connection status, error summary
+
+> All advanced tooling lives behind a toggle so the default view stays clean.
 
 ## 3.5 MQTT Module
 
-### 3.5.1 Broker connectivity
+### 3.5.1 Broker Connectivity
 
-- Broker host/port and TLS configuration.
-- Client identity and auth fields.
-- Human-readable connection status and errors.
-- Keep-alive and session-level controls.
+- Broker host/port with TLS toggle (`mqtts://`)
+- Client ID, username/password auth
+- Connection status that actually tells you what went wrong, CONNACK return codes mapped to
+  human-readable messages (identifier rejected, bad credentials, not authorized) instead of a
+  generic "connection refused"
+- Protocol version selector (3.1.1 / 5.0), keep-alive interval, and clean session controls
+- Live status bar showing connection state, message counts, throughput, latency, and last
+  message time at a glance
 
-### 3.5.2 Pub/sub workflows
+### 3.5.2 Pub/Sub Workflows
 
-- Publish with QoS and retain controls.
-- Dynamic subscribe/unsubscribe.
-- Topic-centric visibility in response pane.
-- Streamed message log with metadata.
+- Publish to any topic with QoS (0 at-most-once, 1 at-least-once, 2 exactly-once) and retain
+  flag — with payload templates for quick JSON scaffolding
+- Dynamic subscribe and unsubscribe — add topics with individual QoS levels, remove them
+  without reconnecting, active subscriptions shown with live per-topic message rate
+- Topic-filtered message stream on the right pane — filter by type (SUB/PUB), search by
+  content, each message shows topic, payload, QoS badge, size, and timestamp
+- "Use last sent" shortcut to quickly republish the previous payload
 
-### 3.5.3 Diagnostics and replay
+### 3.5.3 Diagnostics and Replay
 
-- Rolling throughput/traffic metrics.
-- Replay import/export and deterministic replay options.
-- Advanced options grouped under compact UI controls.
+- Live status strip — msgs/s, sent count, recv count, throughput in B/s, latency, connect
+  attempts, time since last message
+- Session export and import in JSONL format
+- Deterministic replay with speed scaling and seeded jitter for reproducing timing-sensitive
+  bugs
+- All replay and advanced controls grouped behind an Advanced toggle to keep the default
+  view clean
 
-### 3.5.4 Scope note
+### 3.5.4 Scope Note
 
-Primary implementation target is stable core behavior for MQTT workflow support with reliability and observability. Extended compatibility improvements will be tracked as follow-up enhancements where needed.
+The primary target is a stable, reliable MQTT workflow — connect, publish, subscribe, debug,
+replay. Broker-specific edge cases and extended protocol tuning will be tracked as follow-up
+work after the core lands.
 
 ## 3.6 gRPC Module
 
-### 3.6.1 Discovery and schema handling
+### 3.6.1 Discovery and Schema Handling
 
-- Reflection-first service discovery when available.
-- Descriptor/proto fallback path when reflection is unavailable.
-- Service/method/type mapping for editor generation.
+- **Reflection-first** — connect to any gRPC server with reflection enabled and the Service
+  Explorer populates automatically. No `.proto` file needed. Services and methods browse
+  instantly from the left panel.
+- **`.pb` descriptor import** as fallback for production servers with reflection disabled,
+  simpler and more reliable than maintaining a proto text parser
+- Service/method tree maps directly to the request builder, selecting a method generates
+  the correct form fields from the descriptor at runtime
 
-### 3.6.2 Invocation workflows
+One non-obvious thing I ran into while building this: the reflection RPC itself is a
+bidi-streaming call. When it finishes and the stream closes, some servers respond with an
+HTTP/2 `GOAWAY` that kills the entire shared channel, so the actual RPC call right after
+reflection would fail with a connection error. The fix is a **separate ephemeral channel**
+for reflection only, shut down cleanly after discovery, then a fresh channel for real calls.
+That's now baked into the architecture.
 
-- Connection target and metadata configuration.
-- Method request builder with structured payload entry.
-- Response rendering in structured and readable form.
-- Incremental rendering support for streaming output paths in scope.
+### 3.6.2 Invocation Workflows
 
-### 3.6.3 Encoding/decoding strategy
+- Connection target with TLS toggle and metadata (gRPC headers) per call
+- Request builder in two modes — **Form Mode** (typed fields generated from the descriptor,
+  with correct input types for string/bool/enum/bytes/nested messages) and **JSON Mode** for
+  power users
+- All four call types supported: Unary, Server Streaming, Client Streaming, Bidirectional
+- Response pane shows body, headers, trailers, and a timeline — each streaming message
+  rendered as a separate timestamped card
+- Invoke gating — the Invoke button stays disabled until both connection and descriptor are
+  ready, preventing invalid execution states
 
-- Runtime schema-aware serialization paths.
-- Clear transport/serialization error feedback.
-- Future-friendly design for deeper streaming modes.
+### 3.6.3 Encoding/Decoding Strategy
+
+No generated stubs — API Dash doesn't have compiled `.proto` files at runtime. The dynamic
+encoder handles all 15 protobuf field types directly from the descriptor:
+
+- **Varints** (wire type 0): int32, uint32, sint32/64 with ZigZag, bool, enum
+- **Fixed-width** (wire types 1 & 5): float, double, fixed32/64, sfixed32/64
+- **Length-delimited** (wire type 2): string, bytes, nested messages
+
+Wire type correctness matters here — a wrong wire type corrupts the length prefix and every
+field after it becomes garbage. The encoder writes raw `ByteData` directly rather than trying
+to use the `protobuf` package's `CodedBufferWriter` (which is designed for generated code,
+not dynamic use).
+
+---
 
 ## 3.7 ConnectRPC Direction (Stretch)
 
-As a stretch direction, ConnectRPC can be layered through existing HTTP service primitives by adding protocol-specific envelope/headers handling with gRPC editor compatibility. This is explicitly treated as stretch to avoid overpromising core deliverables.
+ConnectRPC support is a stretch goal, explicitly deferred until core protocol stability
+lands. The approach would layer through existing HTTP service primitives with
+protocol-specific envelope and header handling, reusing the gRPC editor path. If core
+delivery finishes ahead of schedule this gets picked up, otherwise it becomes a post-GSoC
+follow-up PR.
+
+---
 
 ## 3.8 UI/UX Integration Plan
 
-New protocol panes will follow API Dash visual conventions:
+All three protocol panes follow the same conventions API Dash already uses:
 
-- clear connection controls,
-- compact default surface,
-- advanced options hidden behind toggles,
-- log/timeline first for debugging,
-- and safe state transitions.
+- **Compact default surface** — the view you see on open shows only what you need to make a
+  connection and send a message
+- **Advanced options behind toggles** — replay controls, decoder uploads, diagnostics,
+  extended settings all hidden until you need them
+- **Timeline/log first** — the response pane leads with the message stream, not metadata
+- **Safe state transitions** — controls enable and disable based on connection state.
+  You can't send before connecting, can't subscribe before the broker confirms, can't invoke
+  before the descriptor is loaded
+- **Consistent across protocols** — same connect/send/log/replay pattern on every pane so
+  switching protocols doesn't require relearning the UI
 
 ### MQTT pane shape
 
