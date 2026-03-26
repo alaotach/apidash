@@ -225,57 +225,37 @@ The WebSocket module is the most complete of the three in the PoC. Here's what i
 
 - Broker host/port with TLS toggle (`mqtts://`)
 - Client ID, username/password auth
-- Connection status that actually tells you what went wrong, CONNACK return codes mapped to
-  human-readable messages (identifier rejected, bad credentials, not authorized) instead of a
-  generic "connection refused"
+- Connection status that actually tells you what went wrong, CONNACK return codes mapped to human-readable messages (identifier rejected, bad credentials, not authorized) instead of a generic "connection refused"
 - Protocol version selector (3.1.1 / 5.0), keep-alive interval, and clean session controls
-- Live status bar showing connection state, message counts, throughput, latency, and last
-  message time at a glance
+- Live status bar showing connection state, message counts, throughput, latency, and last message time at a glance
 
 ### 3.5.2 Pub/Sub Workflows
 
-- Publish to any topic with QoS (0 at-most-once, 1 at-least-once, 2 exactly-once) and retain
-  flag — with payload templates for quick JSON scaffolding
-- Dynamic subscribe and unsubscribe — add topics with individual QoS levels, remove them
-  without reconnecting, active subscriptions shown with live per-topic message rate
-- Topic-filtered message stream on the right pane — filter by type (SUB/PUB), search by
-  content, each message shows topic, payload, QoS badge, size, and timestamp
+- Publish to any topic with QoS (0 at-most-once, 1 at-least-once, 2 exactly-once) and retain flag — with payload templates for quick JSON scaffolding
+- Dynamic subscribe and unsubscribe — add topics with individual QoS levels, remove them without reconnecting, active subscriptions shown with live per-topic message rate
+- Topic-filtered message stream on the right pane — filter by type (SUB/PUB), search by content, each message shows topic, payload, QoS badge, size, and timestamp
 - "Use last sent" shortcut to quickly republish the previous payload
 
 ### 3.5.3 Diagnostics and Replay
 
-- Live status strip — msgs/s, sent count, recv count, throughput in B/s, latency, connect
-  attempts, time since last message
+- Live status strip — msgs/s, sent count, recv count, throughput in B/s, latency, connect attempts, time since last message
 - Session export and import in JSONL format
-- Deterministic replay with speed scaling and seeded jitter for reproducing timing-sensitive
-  bugs
-- All replay and advanced controls grouped behind an Advanced toggle to keep the default
-  view clean
+- Deterministic replay with speed scaling and seeded jitter for reproducing timing-sensitive bugs
+- All replay and advanced controls grouped behind an Advanced toggle to keep the default view clean
 
 ### 3.5.4 Scope Note
 
-The primary target is a stable, reliable MQTT workflow — connect, publish, subscribe, debug,
-replay. Broker-specific edge cases and extended protocol tuning will be tracked as follow-up
-work after the core lands.
+The primary target is a stable, reliable MQTT workflow — connect, publish, subscribe, debug, replay. Broker-specific edge cases and extended protocol tuning will be tracked as follow-up work after the core lands.
 
 ## 3.6 gRPC Module
 
 ### 3.6.1 Discovery and Schema Handling
 
-- **Reflection-first** — connect to any gRPC server with reflection enabled and the Service
-  Explorer populates automatically. No `.proto` file needed. Services and methods browse
-  instantly from the left panel.
-- **`.pb` descriptor import** as fallback for production servers with reflection disabled,
-  simpler and more reliable than maintaining a proto text parser
-- Service/method tree maps directly to the request builder, selecting a method generates
-  the correct form fields from the descriptor at runtime
+- **Reflection-first** — connect to any gRPC server with reflection enabled and the Service Explorer populates automatically. No `.proto` file needed. Services and methods browse instantly from the left panel.
+- **`.pb` descriptor import** as fallback for production servers with reflection disabled, simpler and more reliable than maintaining a proto text parser
+- Service/method tree maps directly to the request builder, selecting a method generates the correct form fields from the descriptor at runtime
 
-One non-obvious thing I ran into while building this: the reflection RPC itself is a
-bidi-streaming call. When it finishes and the stream closes, some servers respond with an
-HTTP/2 `GOAWAY` that kills the entire shared channel, so the actual RPC call right after
-reflection would fail with a connection error. The fix is a **separate ephemeral channel**
-for reflection only, shut down cleanly after discovery, then a fresh channel for real calls.
-That's now baked into the architecture.
+One non-obvious thing I ran into while building this: the reflection RPC itself is a bidi-streaming call. When it finishes and the stream closes, some servers respond with an HTTP/2 `GOAWAY` that kills the entire shared channel, so the actual RPC call right after reflection would fail with a connection error. The fix is a **separate ephemeral channel** for reflection only, shut down cleanly after discovery, then a fresh channel for real calls. That's now baked into the architecture.
 
 ### 3.6.2 Invocation Workflows
 
@@ -291,27 +271,19 @@ That's now baked into the architecture.
 
 ### 3.6.3 Encoding/Decoding Strategy
 
-No generated stubs — API Dash doesn't have compiled `.proto` files at runtime. The dynamic
-encoder handles all 15 protobuf field types directly from the descriptor:
+No generated stubs — API Dash doesn't have compiled `.proto` files at runtime. The dynamic encoder handles all 15 protobuf field types directly from the descriptor:
 
 - **Varints** (wire type 0): int32, uint32, sint32/64 with ZigZag, bool, enum
 - **Fixed-width** (wire types 1 & 5): float, double, fixed32/64, sfixed32/64
 - **Length-delimited** (wire type 2): string, bytes, nested messages
 
-Wire type correctness matters here — a wrong wire type corrupts the length prefix and every
-field after it becomes garbage. The encoder writes raw `ByteData` directly rather than trying
-to use the `protobuf` package's `CodedBufferWriter` (which is designed for generated code,
-not dynamic use).
+Wire type correctness matters here — a wrong wire type corrupts the length prefix and every field after it becomes garbage. The encoder writes raw `ByteData` directly rather than trying to use the `protobuf` package's `CodedBufferWriter` (which is designed for generated code, not dynamic use).
 
 ---
 
 ## 3.7 ConnectRPC Direction (Stretch)
 
-ConnectRPC support is a stretch goal, explicitly deferred until core protocol stability
-lands. The approach would layer through existing HTTP service primitives with
-protocol-specific envelope and header handling, reusing the gRPC editor path. If core
-delivery finishes ahead of schedule this gets picked up, otherwise it becomes a post-GSoC
-follow-up PR.
+ConnectRPC support is a stretch goal, explicitly deferred until core protocol stability lands. The approach would layer through existing HTTP service primitives with protocol-specific envelope and header handling, reusing the gRPC editor path. If core delivery finishes ahead of schedule this gets picked up, otherwise it becomes a post-GSoC follow-up PR.
 
 ---
 
@@ -330,78 +302,72 @@ All three protocol panes follow the same conventions API Dash already uses:
 - **Consistent across protocols** — same connect/send/log/replay pattern on every pane so
   switching protocols doesn't require relearning the UI
 
-### MQTT pane shape
+### MQTT Pane
 
-- Broker and topic controls in dedicated sections.
-- Message panel with filtering and direction visibility.
-- Advanced replay/import/export tools grouped under advanced controls.
+Three-panel layout — connection and topics on the left, publish controls in the center, live message stream on the right. The status bar across the top shows connection state, message counts, throughput, and latency at all times so you never have to dig for it. Advanced replay, import/export, and extended broker settings live behind an Advanced toggle and don't clutter the default view.
 
-### WebSocket pane shape
+### WebSocket Pane
 
-- Connection + message timeline + filters.
-- Advanced decoder/replay options in compact controls.
-- Transport diagnostics integrated without overwhelming default view.
+URL bar at the top, message timeline in the center, send box at the bottom — the same mental model as a chat client because that's what makes sense for a bidirectional stream. Sent and received messages are visually distinct. Filters and search sit above the timeline. Transport diagnostics (TLS cert info, frame metrics, sequence gaps) and decoder/replay controls are behind a Hide/Show advanced toggle so they're one click away but not always in your face.
 
-### gRPC pane shape
+### gRPC Pane
 
-- Endpoint + method selection + payload form.
-- Reflection/proto discovery controls.
-- Structured response section with metadata visibility.
+Service Explorer on the left for browsing discovered services and methods. Request Builder in the center with Form Mode and JSON Mode, generated directly from the runtime descriptor. Response pane on the right showing body, headers, trailers, and a per-message timeline for streaming calls. Reflection and `.pb` import controls are in the Service Explorer panel — where you'd naturally look when setting up a connection, not buried in settings.
 
 ## 3.9 History and Persistence Strategy
 
-For session-oriented protocols, store lightweight summary metadata:
+HTTP requests have a clean request/response pair, easy to store. Protocol sessions don't. A WebSocket session might run for twenty minutes and exchange thousands of messages. Storing everything by default would bloat history fast and make it unusable.
 
-- session duration,
-- message counts,
-- connection status,
-- error summary,
-- replay/export references where applicable.
+The approach is lightweight summary metadata per session:
 
-This ensures useful history without forcing full payload persistence in all paths.
+- session duration
+- message counts (sent/received)
+- final connection status
+- error summary if it ended badly
+- reference to the exported JSONL file if the session was explicitly saved for replay
+
+Full payload history is opt-in via export, not automatic. This keeps the history sidebar useful, you can see at a glance what happened in a session without loading the entire message log, and lets users decide for themselves when a session is worth keeping in full.
+
+Draft connection options (URL, headers, broker settings, last payload) are persisted with the request state so reopening a request puts you back where you were.
 
 ## 3.10 Testing Strategy
 
-### Unit tests
+Testing is staged by milestone — unit tests land with each feature PR, not saved for the end. The goal is to catch regressions at the PR level, not during a final stabilization sprint.
 
-- protocol models,
-- parser/serializer transforms,
-- provider state transitions,
-- invalid-input handling.
+### Unit Tests
 
-### Widget tests
+The boring but essential layer — protocol models, parser/serializer transforms, provider state transitions, and invalid-input handling. These run fast and catch the class of bugs that are hardest to spot in a running app: wrong field defaults, serialization edge cases, state machine transitions that skip a step.
 
-- pane interactions,
-- disabled/enabled state behavior,
-- advanced panel behavior,
-- inline validation and error visibility.
+### Widget Tests
 
-### Integration tests
+Pane-level interactions — connect button enables and disables at the right times, advanced panel shows and hides correctly, inline validation errors appear and clear on user input, disabled states actually prevent actions. These exist because a lot of subtle UX bugs only show up when you simulate real interaction sequences.
 
-- WebSocket echo endpoints,
-- MQTT test broker workflows,
-- gRPC sample services with/without reflection.
+### Integration Tests
 
-### Regression safety
+End-to-end flows against real test servers:
+- WebSocket echo endpoints for send/receive round-trips and reconnect behavior
+- Public MQTT test brokers (broker.hivemq.com) for publish/subscribe workflows
+- gRPC sample services (grpcb.in) for both reflection-enabled and descriptor-import paths
 
-- Ensure no regressions to existing REST/GraphQL/AI workflows.
-- Ensure editor switching and history behavior remain stable.
+### Regression Safety
+
+Every protocol PR runs the existing REST, GraphQL, and AI workflow tests before merge. Editor switching and history behavior get explicit checks — these are the two surfaces most likely to silently break when new protocol routing is added.
 
 ## 3.11 Reliability and Risk Management
 
-Main engineering risks and mitigations:
+Four risks worth being honest about upfront, and what I'm doing about each:
 
-1. **Transport edge cases**
-	 - Mitigation: staged rollout with protocol-specific diagnostics and reconnection guards.
+**1. Transport edge cases**
+WebSocket fragmentation, MQTT broker quirks, gRPC servers that send `GOAWAY` after reflection — these don't show up in happy-path testing. Mitigation is staged rollout with protocol-specific diagnostics built in from day one, not added later. If something breaks silently, the diagnostics surface should tell you where.
 
-2. **UI complexity growth**
-	 - Mitigation: preserve compact default panes and move advanced controls to toggled sections.
+**2. UI complexity growth**
+Three new protocol panes is a lot of surface area. The risk is that each one slowly accumulates controls until the default view is overwhelming. Mitigation is the Advanced toggle pattern applied consistently — high-frequency controls always visible, everything else hidden until needed. This is enforced at the design level, not just aspirationally.
 
-3. **State migration/regression risk**
-	 - Mitigation: provider/model defensive coding + targeted tests + backward-safe defaults.
+**3. State migration and regression risk**
+Adding new fields to protocol models means older persisted sessions might be missing those fields on load. I hit this during PoC development — hot reload would create stale state objects that crashed on newly added non-null fields. Mitigation is defensive defaults everywhere: nullable counters with `?? 0` fallbacks, backward-safe model evolution, and migration checks before each protocol merge.
 
-4. **Over-scoping protocol depth**
-	 - Mitigation: strict core-vs-stretch separation and milestone-based delivery.
+**4. Over-scoping**
+Three protocols in twelve weeks is ambitious. The risk is trying to do too much on each and shipping none of them properly. Mitigation is a hard core/stretch boundary — unary gRPC before streaming, stable MQTT before MQTT v5, working WebSocket before advanced decoder pipelines. Stretch items are real planned work, not vague aspirations, but they don't block core delivery.
 
 ### 3.11.1 Feature and Implementation Tradeoffs
 
@@ -459,20 +425,18 @@ This project is intentionally designed around explicit tradeoffs so the implemen
 
 ## 3.12 Deliverables Summary
 
-Core deliverables:
+**Core**
+1. Protocol-specific request models and routing integration
+2. WebSocket request/editor/provider/service workflow
+3. MQTT request/editor/provider/service workflow
+4. gRPC request/editor/provider/service workflow
+5. Session/history/replay integrations for practical debugging
+6. Test coverage and documentation updates
 
-1. Protocol-specific request models and routing integration.
-2. WebSocket request/editor/provider/service workflow.
-3. MQTT request/editor/provider/service workflow.
-4. gRPC request/editor/provider/service workflow.
-5. Session/history/replay integrations for practical debugging.
-6. Test coverage and documentation updates.
-
-Stretch deliverables:
-
-1. ConnectRPC bridging in gRPC editor path.
-2. Extended streaming invocation modes.
-3. Additional decoder/plugin workflows where applicable.
+**Stretch**
+1. ConnectRPC bridging in gRPC editor path
+2. Extended streaming invocation modes
+3. Additional decoder/plugin workflows where applicable
 
 ## 3.13 Why I Can Execute This
 
@@ -670,18 +634,20 @@ Core dependencies and protocol ecosystem used in PoC implementation:
 
 ### 3.14.7 Why the PoC Diff Became Very Large and How Productionization Will Be Controlled
 
-The large PoC diff was useful for exploration and end-to-end validation, but productionization will be executed through **small, reviewable slices**:
+The PoC was intentionally exploratory — three protocols in parallel, runtime failures to debug, architecture decisions to validate. A 24k-line diff is the right output for that phase. It would be the wrong way to merge it.
 
-1. Model and routing baseline PR.
-2. WebSocket core PR.
-3. WebSocket advanced diagnostics/replay PR.
-4. MQTT core PR.
-5. MQTT advanced/replay PR.
-6. gRPC discovery/invoke PR.
-7. Persistence/history PR.
-8. Stabilization + tests PR.
+Productionization happens in 8 focused PRs:
 
-This avoids reviewer overload and improves merge safety compared to a single monolithic PR.
+1. Model and routing baseline
+2. WebSocket core
+3. WebSocket advanced diagnostics/replay
+4. MQTT core
+5. MQTT advanced/replay
+6. gRPC discovery/invoke
+7. Persistence/history
+8. Stabilization + tests
+
+Each PR is reviewable on its own. No reviewer overload, no big-bang merge risk.
 
 ### 3.14.8 Additional Technical References
 
